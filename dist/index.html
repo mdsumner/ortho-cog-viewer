@@ -40,10 +40,17 @@
         margin: 5px 0;
       }
       #controls input.small {
-        width: 90px;
+        width: 50px;
       }
       #controls input.crs {
         width: 120px;
+      }
+      #controls input.extent {
+        width: 280px;
+      }
+      #vertex-count {
+        color: #aaa;
+        font-size: 10px;
       }
       #controls button {
         padding: 4px 8px;
@@ -91,7 +98,7 @@
         padding: 0 4px;
       }
     </style>
-    <script type="module" crossorigin src="./assets/index-CyQVkkPp.js"></script>
+    <script type="module" crossorigin src="./assets/index-f2pOZq1X.js"></script>
   </head>
   <body>
     <div id="controls">
@@ -102,15 +109,16 @@
         <div class="control-row">
           <label>CRS:</label>
           <input type="text" id="display-crs" class="crs" value="EPSG:3857" />
+        </div>
+        <div class="control-row">
+          <label>Extent:</label>
+          <input type="text" id="extent" class="extent" value="-40000000,40000000,-40000000,40000000" />
+        </div>
+        <div class="control-row">
+          <label>Grid:</label>
+          <input type="number" id="grid-size" class="small" value="32" min="4" max="256" />
+          <span id="vertex-count">(1089 verts)</span>
           <button id="apply-crs-btn">Apply</button>
-        </div>
-        <div class="control-row">
-          <label>xmin:</label><input type="text" id="extent-xmin" class="small" value="-40000000" />
-          <label>xmax:</label><input type="text" id="extent-xmax" class="small" value="40000000" />
-        </div>
-        <div class="control-row">
-          <label>ymin:</label><input type="text" id="extent-ymin" class="small" value="-40000000" />
-          <label>ymax:</label><input type="text" id="extent-ymax" class="small" value="40000000" />
         </div>
       </fieldset>
       

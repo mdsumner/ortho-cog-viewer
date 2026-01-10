@@ -13,11 +13,12 @@ import { ViewController, ViewState } from './ViewController';
 
 registerProjections();
 
-const GRID_SIZE = 32;
 const DEFAULT_EXTENT = Math.PI * 6378137 * 2;  // ~40M meters
+const MAX_VERTICES = 66000;  // ~256x256 grid max
 
 // Current display settings
 let displayCRS = 'EPSG:3857';
+let gridSize = 32;
 let meshExtent = {
   minX: -DEFAULT_EXTENT,
   minY: -DEFAULT_EXTENT,
@@ -47,7 +48,9 @@ let canvas: HTMLCanvasElement;
 // UI elements
 let urlInput: HTMLInputElement;
 let displayCrsInput: HTMLInputElement;
-let extentInputs: { xmin: HTMLInputElement; xmax: HTMLInputElement; ymin: HTMLInputElement; ymax: HTMLInputElement };
+let extentInput: HTMLInputElement;
+let gridSizeInput: HTMLInputElement;
+let vertexCountEl: HTMLElement;
 let infoEl: HTMLElement;
 let layersEl: HTMLElement;
 
@@ -66,14 +69,28 @@ function rgbaToCanvas(data: Uint8ClampedArray, width: number, height: number): H
 }
 
 /**
- * Regenerate base mesh with current extent
+ * Regenerate base mesh with current extent and grid size
  */
 function regenerateMesh(): void {
   baseMesh = generateGridMesh(
     [meshExtent.minX, meshExtent.minY, meshExtent.maxX, meshExtent.maxY],
-    GRID_SIZE
+    gridSize
   );
-  console.log(`Regenerated mesh: ${baseMesh.vertexCount} vertices, extent: [${meshExtent.minX}, ${meshExtent.minY}, ${meshExtent.maxX}, ${meshExtent.maxY}]`);
+  console.log(`Regenerated mesh: ${baseMesh.vertexCount} vertices, grid ${gridSize}×${gridSize}`);
+  updateVertexCount();
+}
+
+/**
+ * Update vertex count display
+ */
+function updateVertexCount(): void {
+  const verts = (gridSize + 1) * (gridSize + 1);
+  vertexCountEl.textContent = `(${verts} verts)`;
+  if (verts > MAX_VERTICES) {
+    vertexCountEl.style.color = '#f66';
+  } else {
+    vertexCountEl.style.color = '#aaa';
+  }
 }
 
 /**
@@ -100,27 +117,41 @@ function updateLayerMesh(layer: Layer): void {
 function applyDisplaySettings(): void {
   // Read values from UI
   const newCRS = displayCrsInput.value.trim();
-  const newExtent = {
-    minX: parseFloat(extentInputs.xmin.value),
-    minY: parseFloat(extentInputs.ymin.value),
-    maxX: parseFloat(extentInputs.xmax.value),
-    maxY: parseFloat(extentInputs.ymax.value)
-  };
   
-  // Validate
+  // Parse extent: "xmin,xmax,ymin,ymax"
+  const extentParts = extentInput.value.split(',').map(s => parseFloat(s.trim()));
+  if (extentParts.length !== 4 || extentParts.some(isNaN)) {
+    alert('Invalid extent. Use format: xmin,xmax,ymin,ymax');
+    return;
+  }
+  const [xmin, xmax, ymin, ymax] = extentParts;
+  
+  // Parse grid size
+  const newGridSize = parseInt(gridSizeInput.value);
+  if (isNaN(newGridSize) || newGridSize < 4) {
+    alert('Grid size must be at least 4');
+    return;
+  }
+  
+  // Check vertex count
+  const vertexCount = (newGridSize + 1) * (newGridSize + 1);
+  if (vertexCount > MAX_VERTICES) {
+    if (!confirm(`Grid ${newGridSize}×${newGridSize} = ${vertexCount} vertices. This may be slow. Continue?`)) {
+      return;
+    }
+  }
+  
+  // Validate CRS
   if (!newCRS) {
     alert('Invalid CRS');
     return;
   }
-  if (isNaN(newExtent.minX) || isNaN(newExtent.minY) || isNaN(newExtent.maxX) || isNaN(newExtent.maxY)) {
-    alert('Invalid extent values');
-    return;
-  }
   
-  console.log(`Applying display: CRS=${newCRS}, extent=[${newExtent.minX}, ${newExtent.minY}, ${newExtent.maxX}, ${newExtent.maxY}]`);
+  console.log(`Applying display: CRS=${newCRS}, extent=[${xmin}, ${ymin}, ${xmax}, ${ymax}], grid=${newGridSize}`);
   
   displayCRS = newCRS;
-  meshExtent = newExtent;
+  gridSize = newGridSize;
+  meshExtent = { minX: xmin, minY: ymin, maxX: xmax, maxY: ymax };
   
   // Regenerate mesh
   regenerateMesh();
@@ -321,12 +352,9 @@ async function main() {
   const container = document.getElementById('app')!;
   urlInput = document.getElementById('cog-url') as HTMLInputElement;
   displayCrsInput = document.getElementById('display-crs') as HTMLInputElement;
-  extentInputs = {
-    xmin: document.getElementById('extent-xmin') as HTMLInputElement,
-    xmax: document.getElementById('extent-xmax') as HTMLInputElement,
-    ymin: document.getElementById('extent-ymin') as HTMLInputElement,
-    ymax: document.getElementById('extent-ymax') as HTMLInputElement
-  };
+  extentInput = document.getElementById('extent') as HTMLInputElement;
+  gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
+  vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
   layersEl = document.getElementById('layers')!;
   const loadBtn = document.getElementById('load-btn')!;
@@ -396,6 +424,18 @@ async function main() {
   
   applyCrsBtn.addEventListener('click', () => {
     applyDisplaySettings();
+  });
+  
+  // Update vertex count preview on grid size change
+  gridSizeInput.addEventListener('input', () => {
+    const size = parseInt(gridSizeInput.value) || 32;
+    const verts = (size + 1) * (size + 1);
+    vertexCountEl.textContent = `(${verts} verts)`;
+    if (verts > MAX_VERTICES) {
+      vertexCountEl.style.color = '#f66';
+    } else {
+      vertexCountEl.style.color = '#aaa';
+    }
   });
   
   // Expose removeLayer globally for onclick
