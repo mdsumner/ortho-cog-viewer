@@ -2,7 +2,7 @@
  * COG loading utilities using geotiff.js
  */
 
-import { fromUrl, GeoTIFFImage } from 'geotiff';
+import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
 import { SourceBounds } from './uv';
 
 export interface COGMetadata {
@@ -15,6 +15,26 @@ export interface COGMetadata {
   samplesPerPixel: number;
   bitsPerSample: number[];
   overviewCount: number;
+}
+
+export interface OverviewInfo {
+  index: number;
+  width: number;
+  height: number;
+  resolution: number;  // world units per pixel
+}
+
+// Cache the tiff object for reuse
+let cachedTiff: GeoTIFF | null = null;
+let cachedUrl: string | null = null;
+
+async function getTiff(url: string): Promise<GeoTIFF> {
+  if (cachedTiff && cachedUrl === url) {
+    return cachedTiff;
+  }
+  cachedTiff = await fromUrl(url);
+  cachedUrl = url;
+  return cachedTiff;
 }
 
 /**
@@ -40,7 +60,7 @@ function parseCRSFromGeoKeys(geoKeys: Record<string, number>): string | null {
 export async function loadCOGMetadata(url: string): Promise<COGMetadata> {
   console.log('Loading COG metadata from:', url);
   
-  const tiff = await fromUrl(url);
+  const tiff = await getTiff(url);
   const image = await tiff.getImage();
   
   const geoKeys = image.getGeoKeys();
@@ -67,6 +87,92 @@ export async function loadCOGMetadata(url: string): Promise<COGMetadata> {
   console.log('GeoKeys:', geoKeys);
   
   return metadata;
+}
+
+/**
+ * Get info about all available overviews.
+ */
+export async function getOverviews(url: string, bounds: SourceBounds): Promise<OverviewInfo[]> {
+  const tiff = await getTiff(url);
+  const imageCount = await tiff.getImageCount();
+  const overviews: OverviewInfo[] = [];
+  
+  const boundsWidth = bounds.maxX - bounds.minX;
+  
+  for (let i = 0; i < imageCount; i++) {
+    const img = await tiff.getImage(i);
+    const width = img.getWidth();
+    const height = img.getHeight();
+    const resolution = boundsWidth / width;  // world units per pixel
+    
+    overviews.push({ index: i, width, height, resolution });
+  }
+  
+  console.log('Available overviews:', overviews);
+  return overviews;
+}
+
+/**
+ * Select the best overview for a given display resolution.
+ * Returns the overview that provides at least 1:1 pixel density.
+ */
+export function selectOverview(overviews: OverviewInfo[], displayResolution: number): OverviewInfo {
+  // Sort by resolution (finest to coarsest)
+  const sorted = [...overviews].sort((a, b) => a.resolution - b.resolution);
+  
+  // Find the coarsest overview that still has higher resolution than display
+  // (i.e., resolution <= displayResolution)
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i].resolution <= displayResolution) {
+      return sorted[i];
+    }
+  }
+  
+  // If display needs finer than our finest, use the finest we have
+  return sorted[0];
+}
+
+/**
+ * Load a specific overview by index.
+ */
+export async function loadOverview(
+  url: string,
+  overviewIndex: number
+): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  console.log(`Loading overview ${overviewIndex}...`);
+  
+  const tiff = await getTiff(url);
+  const image = await tiff.getImage(overviewIndex);
+  
+  const width = image.getWidth();
+  const height = image.getHeight();
+  const samplesPerPixel = image.getSamplesPerPixel();
+  
+  console.log(`  Size: ${width}x${height}, ${samplesPerPixel} bands`);
+  
+  const rasters = await image.readRasters({ interleave: true });
+  const data = rasters as Uint8Array | Uint16Array | Float32Array;
+  
+  // Convert to RGBA
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  
+  for (let i = 0; i < width * height; i++) {
+    if (samplesPerPixel >= 3) {
+      rgba[i * 4 + 0] = clampByte(data[i * samplesPerPixel + 0]);
+      rgba[i * 4 + 1] = clampByte(data[i * samplesPerPixel + 1]);
+      rgba[i * 4 + 2] = clampByte(data[i * samplesPerPixel + 2]);
+      rgba[i * 4 + 3] = samplesPerPixel >= 4 ? clampByte(data[i * samplesPerPixel + 3]) : 255;
+    } else {
+      const v = clampByte(data[i]);
+      rgba[i * 4 + 0] = v;
+      rgba[i * 4 + 1] = v;
+      rgba[i * 4 + 2] = v;
+      rgba[i * 4 + 3] = 255;
+    }
+  }
+  
+  console.log(`  Loaded ${width}x${height} overview`);
+  return { data: rgba, width, height };
 }
 
 /**

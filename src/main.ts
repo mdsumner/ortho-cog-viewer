@@ -2,20 +2,20 @@
  * Ortho COG Viewer - Main entry point
  *
  * Pure WebGL2 implementation with custom view controller.
- * No deck.gl dependency.
+ * Multi-resolution COG support - loads appropriate overview based on zoom.
  */
 
 import { generateGridMesh } from './mesh';
 import { computeTextureCoords, transformBounds, SourceBounds } from './uv';
 import { registerProjections } from './crs';
-import { loadCOGMetadata, loadCOGPreview } from './cog';
+import { loadCOGMetadata, getOverviews, selectOverview, loadOverview, OverviewInfo } from './cog';
 import { MeshRenderer } from './MeshRenderer';
 import { ViewController, ViewState } from './ViewController';
 
 registerProjections();
 
-const COG_URL = 'https://projects.pawsey.org.au/image-cogs/images/Topographic_Base_Map.tif';
-const DISPLAY_CRS = 'EPSG:3857';
+const COG_URL = 'https://projects.pawsey.org.au/image-cogs/images/IBCSO_v2_digital_chart.tif';
+const DISPLAY_CRS = 'EPSG:3857';  // Always display in Mercator
 const GRID_SIZE = 32;
 
 function createTestPattern(width: number, height: number): HTMLCanvasElement {
@@ -36,6 +36,20 @@ function createTestPattern(width: number, height: number): HTMLCanvasElement {
   ctx.fillText('NE', width - 40, 30);
   ctx.fillText('SW', 10, height - 10);
   ctx.fillText('SE', width - 40, height - 10);
+  return canvas;
+}
+
+/**
+ * Convert RGBA data to canvas
+ */
+function rgbaToCanvas(data: Uint8ClampedArray, width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const imageData = ctx.createImageData(width, height);
+  imageData.data.set(data);
+  ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
 
@@ -74,7 +88,7 @@ async function main() {
     setStatus('WebGL2 not supported');
     return;
   }
-  const gl = glContext;  // TypeScript now knows gl is non-null
+  const gl = glContext;
 
   // Clear function
   function clear() {
@@ -86,33 +100,27 @@ async function main() {
 
   let sourceCRS: string;
   let sourceBounds: SourceBounds;
-  let textureCanvas: HTMLCanvasElement;
+  let overviews: OverviewInfo[] = [];
+  let currentOverviewIndex = -1;
+  let isLoadingOverview = false;
 
   try {
     const metadata = await loadCOGMetadata(COG_URL);
     if (!metadata.crs) throw new Error('COG has no CRS information');
     sourceCRS = metadata.crs;
     sourceBounds = metadata.bounds;
-    setStatus(`COG CRS: ${sourceCRS}<br>Loading preview...`);
-
-    const preview = await loadCOGPreview(COG_URL, 2048);
-
-    // Create canvas from preview data
-    textureCanvas = document.createElement('canvas');
-    textureCanvas.width = preview.width;
-    textureCanvas.height = preview.height;
-    const ctx = textureCanvas.getContext('2d')!;
-    const imageData = ctx.createImageData(preview.width, preview.height);
-    imageData.data.set(preview.data);
-    ctx.putImageData(imageData, 0, 0);
-
-    setStatus(`Loaded ${preview.width}x${preview.height} preview`);
+    
+    setStatus(`COG CRS: ${sourceCRS}<br>Loading overviews...`);
+    
+    // Get overview info
+    overviews = await getOverviews(COG_URL, sourceBounds);
+    
+    setStatus(`Found ${overviews.length} resolution levels`);
   } catch (err) {
     console.error('Failed to load COG:', err);
     setStatus(`COG load failed: ${err}<br>Using test pattern`);
     sourceCRS = 'EPSG:4326';
     sourceBounds = { minX: 112, minY: -44, maxX: 154, maxY: -10 };
-    textureCanvas = createTestPattern(512, 512);
   }
 
   const displayBounds = transformBounds(sourceBounds, sourceCRS, DISPLAY_CRS);
@@ -141,14 +149,53 @@ async function main() {
     texCoords: mesh.texCoords,
     indices: mesh.indices
   });
+
+  // Start with test pattern, will be replaced when overview loads
+  let textureCanvas = createTestPattern(256, 256);
   renderer.setTexture(textureCanvas);
+
+  // Calculate display resolution from view state
+  // Returns world units per CSS pixel
+  function getDisplayResolution(state: ViewState): number {
+    const scale = Math.pow(2, state.zoom);
+    // At zoom=0, 1 CSS pixel = 1 world unit
+    // At zoom=1, 1 CSS pixel = 0.5 world units (zoomed in)
+    // At zoom=-1, 1 CSS pixel = 2 world units (zoomed out)
+    return 1 / scale;
+  }
+
+  // Load overview if needed based on current resolution
+  async function updateOverviewIfNeeded(state: ViewState) {
+    if (overviews.length === 0 || isLoadingOverview) return;
+
+    const displayRes = getDisplayResolution(state);
+    const needed = selectOverview(overviews, displayRes);
+    
+    if (needed.index !== currentOverviewIndex) {
+      console.log(`Resolution change: ${displayRes.toFixed(1)} -> need overview ${needed.index} (${needed.width}x${needed.height})`);
+      
+      isLoadingOverview = true;
+      currentOverviewIndex = needed.index;
+      
+      try {
+        const data = await loadOverview(COG_URL, needed.index);
+        textureCanvas = rgbaToCanvas(data.data, data.width, data.height);
+        renderer.updateTexture(textureCanvas);
+        
+        // Re-render with new texture
+        render(state);
+      } catch (err) {
+        console.error('Failed to load overview:', err);
+      } finally {
+        isLoadingOverview = false;
+      }
+    }
+  }
 
   // Render function
   function render(state: ViewState) {
-    // Clear with a background color
     clear();
 
-    // Render the mesh
     renderer.renderWithViewport(
       state.centerX,
       state.centerY,
@@ -157,14 +204,30 @@ async function main() {
       canvas.clientHeight
     );
 
-    // Update info
+    // Show current overview info
+    const ovInfo = currentOverviewIndex >= 0 && overviews[currentOverviewIndex]
+      ? `${overviews[currentOverviewIndex].width}×${overviews[currentOverviewIndex].height}`
+      : 'loading...';
+
     infoEl.innerHTML = `
       <strong>Ortho COG Viewer</strong><br>
       Display: ${DISPLAY_CRS}<br>
       Source: ${sourceCRS}<br>
-      Grid: ${GRID_SIZE}×${GRID_SIZE}<br>
+      Overview: ${ovInfo}${isLoadingOverview ? ' ⏳' : ''}<br>
       Zoom: ${state.zoom.toFixed(2)}
     `;
+  }
+
+  // Debounce overview loading to avoid excessive requests during zoom
+  let updateTimeout: number | null = null;
+  function scheduleOverviewUpdate(state: ViewState) {
+    if (updateTimeout) {
+      clearTimeout(updateTimeout);
+    }
+    updateTimeout = window.setTimeout(() => {
+      updateOverviewIfNeeded(state);
+      updateTimeout = null;
+    }, 150);  // Wait 150ms after last zoom change
   }
 
   // Calculate initial zoom to fit bounds
@@ -175,6 +238,12 @@ async function main() {
   const scale = Math.min(cssWidth / boundsWidth, cssHeight / boundsHeight) * 0.9;
   const initialZoom = Math.log2(scale);
 
+  // View change handler
+  function onViewChange(state: ViewState) {
+    render(state);
+    scheduleOverviewUpdate(state);
+  }
+
   // Create view controller
   const controller = new ViewController(
     canvas,
@@ -183,16 +252,22 @@ async function main() {
       centerY: (displayBounds.minY + displayBounds.maxY) / 2,
       zoom: initialZoom
     },
-    render  // Called on every view change
+    onViewChange
   );
 
   // Also re-render on resize
   window.addEventListener('resize', () => {
     resizeCanvas();
-    render(controller.getState());
+    const state = controller.getState();
+    render(state);
+    scheduleOverviewUpdate(state);
   });
 
-  console.log('Viewer ready (no deck.gl!)');
+  // Load initial overview
+  const initialState = controller.getState();
+  updateOverviewIfNeeded(initialState);
+
+  console.log('Viewer ready with multi-resolution support!');
 }
 
 main().catch(console.error);

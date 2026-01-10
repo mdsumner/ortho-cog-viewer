@@ -1,6 +1,4 @@
-.Rproj.user
-.Rhistory
-.Rdata
-.httr-oauth
+node_modules/
+dist/
+*.log
 .DS_Store
-.quarto

@@ -15,9 +15,6 @@ importers:
         specifier: ^2.11.0
         version: 2.20.2
     devDependencies:
-      '@types/proj4':
-        specifier: ^2.5.5
-        version: 2.19.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -296,10 +293,6 @@ packages:
   '@types/estree@1.0.8':
     resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
 
-  '@types/proj4@2.19.0':
-    resolution: {integrity: sha512-mirdnXu5sW9+IphQ4r+ZVii2JVLDbXgMp1lxqbiCppdgL22EwMwL4Dy/cyHVaJ2y/mi7LUQHghpILd3w3j2bnA==}
-    deprecated: This is a stub types definition. proj4 provides its own type definitions, so you do not need this installed.
-
   esbuild@0.21.5:
     resolution: {integrity: sha512-mg3OPMV4hXywwpoDxu3Qda5xCKQi+vCTZq8S9J/EpkhB2HzKXq4SNFZE3+NK93JYxc8VMSep+lOUSC/RVKaBqw==}
     engines: {node: '>=12'}
@@ -551,10 +544,6 @@ snapshots:
     optional: true
 
   '@types/estree@1.0.8': {}
-
-  '@types/proj4@2.19.0':
-    dependencies:
-      proj4: 2.20.2
 
   esbuild@0.21.5:
     optionalDependencies:
