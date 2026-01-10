@@ -17,7 +17,6 @@ export class MeshRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private texture: WebGLTexture | null = null;
   private indexCount: number = 0;
-  private _lastLog: number = 0;
 
   // Uniform locations
   private uMatrix: WebGLUniformLocation | null = null;
@@ -176,15 +175,6 @@ export class MeshRenderer {
 
     // Get actual canvas size
     const canvas = gl.canvas as HTMLCanvasElement;
-    
-    // Debug - log once per second
-    if (!this._lastLog || Date.now() - this._lastLog > 1000) {
-      this._lastLog = Date.now();
-      console.log('Canvas physical:', canvas.width, canvas.height);
-      console.log('Canvas CSS:', canvas.clientWidth, canvas.clientHeight);
-      console.log('Window:', window.innerWidth, window.innerHeight);
-      console.log('DPR:', window.devicePixelRatio);
-    }
 
     // Set viewport to full canvas
     gl.viewport(0, 0, canvas.width, canvas.height);
