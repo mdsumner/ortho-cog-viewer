@@ -1,15 +1,16 @@
 /**
  * Ortho COG Viewer - Main entry point
  *
- * Uses minimal WebGL2 for textured mesh rendering with deck.gl for view control.
+ * Pure WebGL2 implementation with custom view controller.
+ * No deck.gl dependency.
  */
 
-import { Deck, OrthographicView } from '@deck.gl/core';
 import { generateGridMesh } from './mesh';
 import { computeTextureCoords, transformBounds, SourceBounds } from './uv';
 import { registerProjections } from './crs';
 import { loadCOGMetadata, loadCOGPreview } from './cog';
 import { MeshRenderer } from './MeshRenderer';
+import { ViewController, ViewState } from './ViewController';
 
 registerProjections();
 
@@ -40,10 +41,46 @@ function createTestPattern(width: number, height: number): HTMLCanvasElement {
 
 async function main() {
   const infoEl = document.getElementById('info')!;
+  const container = document.getElementById('app')!;
+  
   const setStatus = (msg: string) => {
     console.log(msg);
     infoEl.innerHTML = `<strong>Ortho COG Viewer</strong><br>${msg}`;
   };
+
+  // Create canvas
+  const canvas = document.createElement('canvas');
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.cursor = 'grab';
+  container.appendChild(canvas);
+
+  // Handle high-DPI displays
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+  }
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  // Get WebGL2 context
+  const glContext = canvas.getContext('webgl2', { 
+    antialias: true,
+    alpha: false 
+  });
+  if (!glContext) {
+    setStatus('WebGL2 not supported');
+    return;
+  }
+  const gl = glContext;  // TypeScript now knows gl is non-null
+
+  // Clear function
+  function clear() {
+    gl.clearColor(0.1, 0.1, 0.1, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
 
   setStatus('Loading COG metadata...');
 
@@ -97,103 +134,65 @@ async function main() {
     sourceBounds
   );
 
-  // Log some UVs for debugging
-  console.log('Sample UVs:');
-  for (let i = 0; i < 3; i++) {
-    console.log(`  vertex ${i}: u=${mesh.texCoords[i*2].toFixed(4)}, v=${mesh.texCoords[i*2+1].toFixed(4)}`);
+  // Create renderer
+  const renderer = new MeshRenderer(gl);
+  renderer.setMesh({
+    positions: mesh.positions,
+    texCoords: mesh.texCoords,
+    indices: mesh.indices
+  });
+  renderer.setTexture(textureCanvas);
+
+  // Render function
+  function render(state: ViewState) {
+    // Clear with a background color
+    clear();
+
+    // Render the mesh
+    renderer.renderWithViewport(
+      state.centerX,
+      state.centerY,
+      state.zoom,
+      canvas.clientWidth,
+      canvas.clientHeight
+    );
+
+    // Update info
+    infoEl.innerHTML = `
+      <strong>Ortho COG Viewer</strong><br>
+      Display: ${DISPLAY_CRS}<br>
+      Source: ${sourceCRS}<br>
+      Grid: ${GRID_SIZE}×${GRID_SIZE}<br>
+      Zoom: ${state.zoom.toFixed(2)}
+    `;
   }
 
-  // Calculate view parameters
-  const centerX = (displayBounds.minX + displayBounds.maxX) / 2;
-  const centerY = (displayBounds.minY + displayBounds.maxY) / 2;
+  // Calculate initial zoom to fit bounds
   const boundsWidth = displayBounds.maxX - displayBounds.minX;
   const boundsHeight = displayBounds.maxY - displayBounds.minY;
-  const initialZoom = Math.log2(Math.min(window.innerWidth, window.innerHeight) / Math.max(boundsWidth, boundsHeight));
+  const cssWidth = canvas.clientWidth;
+  const cssHeight = canvas.clientHeight;
+  const scale = Math.min(cssWidth / boundsWidth, cssHeight / boundsHeight) * 0.9;
+  const initialZoom = Math.log2(scale);
 
-  const container = document.getElementById('app') as HTMLDivElement;
-  if (!container) throw new Error('App container not found');
-
-  // Renderer and view state
-  let meshRenderer: MeshRenderer | null = null;
-  let currentViewState = {
-    target: [centerX, centerY, 0] as [number, number, number],
-    zoom: initialZoom
-  };
-
-  const deck = new Deck({
-    parent: container,
-    views: new OrthographicView({
-      id: 'ortho',
-      flipY: false,
-      controller: true
-    }),
-    initialViewState: {
-      target: [centerX, centerY, 0],
-      zoom: initialZoom,
-      minZoom: -20,
-      maxZoom: 10
+  // Create view controller
+  const controller = new ViewController(
+    canvas,
+    {
+      centerX: (displayBounds.minX + displayBounds.maxX) / 2,
+      centerY: (displayBounds.minY + displayBounds.maxY) / 2,
+      zoom: initialZoom
     },
-    controller: true,
-    layers: [],
+    render  // Called on every view change
+  );
 
-    onLoad: () => {
-      console.log('Deck loaded, setting up WebGL renderer...');
-
-      const canvas = container.querySelector('canvas');
-      if (!canvas) {
-        console.error('No canvas found');
-        return;
-      }
-
-      const gl = canvas.getContext('webgl2');
-      if (!gl) {
-        console.error('No WebGL2 context');
-        return;
-      }
-
-      meshRenderer = new MeshRenderer(gl);
-      meshRenderer.setMesh({
-        positions: mesh.positions,
-        texCoords: mesh.texCoords,
-        indices: mesh.indices
-      });
-      meshRenderer.setTexture(textureCanvas);
-
-      console.log('WebGL renderer ready');
-    },
-
-    onViewStateChange: ({ viewState }) => {
-      currentViewState = {
-        target: viewState.target as [number, number, number],
-        zoom: typeof viewState.zoom === 'number' ? viewState.zoom : initialZoom
-      };
-
-      infoEl.innerHTML = `
-        <strong>Ortho COG Viewer</strong><br>
-        Display: ${DISPLAY_CRS}<br>
-        Source: ${sourceCRS}<br>
-        Grid: ${GRID_SIZE}×${GRID_SIZE}<br>
-        Zoom: ${currentViewState.zoom.toFixed(2)}
-      `;
-    },
-
-    onAfterRender: () => {
-      if (!meshRenderer) return;
-
-      const viewport = deck.getViewports()[0];
-      if (!viewport) return;
-
-      meshRenderer.renderWithViewport(
-        currentViewState.target[0],
-        currentViewState.target[1],
-        currentViewState.zoom,
-        viewport.width,
-        viewport.height
-      );
-    }
+  // Also re-render on resize
+  window.addEventListener('resize', () => {
+    resizeCanvas();
+    render(controller.getState());
   });
 
-  console.log('Viewer initialized');
+  console.log('Viewer ready (no deck.gl!)');
 }
 
 main().catch(console.error);
