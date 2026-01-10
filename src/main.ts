@@ -1,7 +1,7 @@
 /**
  * Ortho COG Viewer - Main entry point
  *
- * Multi-layer COG viewer with arbitrary source CRS → Mercator display.
+ * Multi-layer COG viewer with arbitrary source CRS → arbitrary display CRS.
  */
 
 import { generateGridMesh, GridMesh } from './mesh';
@@ -13,9 +13,17 @@ import { ViewController, ViewState } from './ViewController';
 
 registerProjections();
 
-const DISPLAY_CRS = 'EPSG:3857';
 const GRID_SIZE = 32;
-const WORLD_EXTENT = Math.PI * 6378137 * 2;
+const DEFAULT_EXTENT = Math.PI * 6378137 * 2;  // ~40M meters
+
+// Current display settings
+let displayCRS = 'EPSG:3857';
+let meshExtent = {
+  minX: -DEFAULT_EXTENT,
+  minY: -DEFAULT_EXTENT,
+  maxX: DEFAULT_EXTENT,
+  maxY: DEFAULT_EXTENT
+};
 
 // Layer state
 interface Layer {
@@ -38,6 +46,8 @@ let canvas: HTMLCanvasElement;
 
 // UI elements
 let urlInput: HTMLInputElement;
+let displayCrsInput: HTMLInputElement;
+let extentInputs: { xmin: HTMLInputElement; xmax: HTMLInputElement; ymin: HTMLInputElement; ymax: HTMLInputElement };
 let infoEl: HTMLElement;
 let layersEl: HTMLElement;
 
@@ -53,6 +63,94 @@ function rgbaToCanvas(data: Uint8ClampedArray, width: number, height: number): H
   imageData.data.set(data);
   ctx.putImageData(imageData, 0, 0);
   return c;
+}
+
+/**
+ * Regenerate base mesh with current extent
+ */
+function regenerateMesh(): void {
+  baseMesh = generateGridMesh(
+    [meshExtent.minX, meshExtent.minY, meshExtent.maxX, meshExtent.maxY],
+    GRID_SIZE
+  );
+  console.log(`Regenerated mesh: ${baseMesh.vertexCount} vertices, extent: [${meshExtent.minX}, ${meshExtent.minY}, ${meshExtent.maxX}, ${meshExtent.maxY}]`);
+}
+
+/**
+ * Recompute UVs and update renderer for a layer
+ */
+function updateLayerMesh(layer: Layer): void {
+  const texCoords = computeTextureCoords(
+    baseMesh.positions,
+    displayCRS,
+    layer.sourceCRS,
+    layer.sourceBounds
+  );
+  
+  layer.renderer.setMesh({
+    positions: baseMesh.positions,
+    texCoords: texCoords,
+    indices: baseMesh.indices
+  });
+}
+
+/**
+ * Apply new display CRS and extent to all layers
+ */
+function applyDisplaySettings(): void {
+  // Read values from UI
+  const newCRS = displayCrsInput.value.trim();
+  const newExtent = {
+    minX: parseFloat(extentInputs.xmin.value),
+    minY: parseFloat(extentInputs.ymin.value),
+    maxX: parseFloat(extentInputs.xmax.value),
+    maxY: parseFloat(extentInputs.ymax.value)
+  };
+  
+  // Validate
+  if (!newCRS) {
+    alert('Invalid CRS');
+    return;
+  }
+  if (isNaN(newExtent.minX) || isNaN(newExtent.minY) || isNaN(newExtent.maxX) || isNaN(newExtent.maxY)) {
+    alert('Invalid extent values');
+    return;
+  }
+  
+  console.log(`Applying display: CRS=${newCRS}, extent=[${newExtent.minX}, ${newExtent.minY}, ${newExtent.maxX}, ${newExtent.maxY}]`);
+  
+  displayCRS = newCRS;
+  meshExtent = newExtent;
+  
+  // Regenerate mesh
+  regenerateMesh();
+  
+  // Update all layers
+  for (const layer of layers) {
+    try {
+      updateLayerMesh(layer);
+    } catch (err) {
+      console.error(`Failed to update layer ${layer.id}:`, err);
+    }
+  }
+  
+  // Reset view to center of new extent
+  const centerX = (meshExtent.minX + meshExtent.maxX) / 2;
+  const centerY = (meshExtent.minY + meshExtent.maxY) / 2;
+  const extentWidth = meshExtent.maxX - meshExtent.minX;
+  const scale = canvas.clientWidth / extentWidth;
+  const zoom = Math.log2(scale);
+  
+  viewController = new ViewController(
+    canvas,
+    { centerX, centerY, zoom },
+    (state) => {
+      render(state);
+      scheduleOverviewUpdates(state);
+    }
+  );
+  
+  render(viewController.getState());
 }
 
 /**
@@ -74,7 +172,7 @@ async function addLayer(url: string): Promise<Layer | null> {
     // Compute UVs for this source
     const texCoords = computeTextureCoords(
       baseMesh.positions,
-      DISPLAY_CRS,
+      displayCRS,
       metadata.crs,
       metadata.bounds
     );
@@ -189,7 +287,7 @@ function render(state: ViewState): void {
  */
 function updateInfo(state: ViewState): void {
   infoEl.innerHTML = `
-    Display: ${DISPLAY_CRS}<br>
+    Display: ${displayCRS}<br>
     Zoom: ${state.zoom.toFixed(2)}<br>
     Layers: ${layers.length}
   `;
@@ -222,10 +320,18 @@ function updateUI(): void {
 async function main() {
   const container = document.getElementById('app')!;
   urlInput = document.getElementById('cog-url') as HTMLInputElement;
+  displayCrsInput = document.getElementById('display-crs') as HTMLInputElement;
+  extentInputs = {
+    xmin: document.getElementById('extent-xmin') as HTMLInputElement,
+    xmax: document.getElementById('extent-xmax') as HTMLInputElement,
+    ymin: document.getElementById('extent-ymin') as HTMLInputElement,
+    ymax: document.getElementById('extent-ymax') as HTMLInputElement
+  };
   infoEl = document.getElementById('info')!;
   layersEl = document.getElementById('layers')!;
   const loadBtn = document.getElementById('load-btn')!;
   const addBtn = document.getElementById('add-btn')!;
+  const applyCrsBtn = document.getElementById('apply-crs-btn')!;
   
   // Create canvas
   canvas = document.createElement('canvas');
@@ -255,18 +361,8 @@ async function main() {
   }
   gl = glContext;
   
-  // Generate base mesh (fixed world extent)
-  const displayBounds = {
-    minX: -WORLD_EXTENT,
-    minY: -WORLD_EXTENT,
-    maxX: WORLD_EXTENT,
-    maxY: WORLD_EXTENT
-  };
-  baseMesh = generateGridMesh(
-    [displayBounds.minX, displayBounds.minY, displayBounds.maxX, displayBounds.maxY],
-    GRID_SIZE
-  );
-  console.log(`Base mesh: ${baseMesh.vertexCount} vertices`);
+  // Generate initial base mesh
+  regenerateMesh();
   
   // View controller
   viewController = new ViewController(
@@ -296,6 +392,10 @@ async function main() {
     if (e.key === 'Enter') {
       loadBtn.click();
     }
+  });
+  
+  applyCrsBtn.addEventListener('click', () => {
+    applyDisplaySettings();
   });
   
   // Expose removeLayer globally for onclick
