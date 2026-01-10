@@ -1,19 +1,19 @@
 {
-    "id": "FDBD71AD",
-    "path": "~/Git/ortho-cog-viewer/.gitignore",
-    "project_path": ".gitignore",
-    "type": "gitignore",
+    "id": "D1B6BF3F",
+    "path": "~/Git/ortho-cog-viewer/src/uv.ts",
+    "project_path": "src/uv.ts",
+    "type": "js",
     "hash": "0",
     "contents": "",
     "dirty": false,
-    "created": 1768025754730.0,
+    "created": 1768028104995.0,
     "source_on_save": false,
-    "relative_order": 1,
+    "relative_order": 3,
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "4,0",
-        "scrollLine": "0"
+        "cursorPosition": "42,2",
+        "scrollLine": "35"
     },
     "folds": "",
     "lastKnownWriteTime": 1768027484,
