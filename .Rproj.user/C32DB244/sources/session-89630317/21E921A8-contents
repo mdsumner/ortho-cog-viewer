@@ -32,7 +32,6 @@
         max-width: 300px;
       }
     </style>
-    <script type="module" crossorigin src="./assets/index-B7D209OR.js"></script>
   </head>
   <body>
     <div id="info">
@@ -42,5 +41,6 @@
       Grid: 16×16
     </div>
     <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
