@@ -70,7 +70,8 @@ export function computeTextureCoords(
 
 /**
  * Transform bounds from one CRS to another.
- * Samples along edges to handle non-linear transforms.
+ * Samples along edges AND interior to handle non-linear transforms
+ * (important for polar projections where extremes may be in the interior).
  */
 export function transformBounds(
   bounds: SourceBounds,
@@ -87,25 +88,28 @@ export function transformBounds(
 
   const { minX, minY, maxX, maxY } = bounds;
 
-  // Sample along all four edges
+  // Sample a grid across the entire bounds (edges + interior)
   for (let i = 0; i <= samples; i++) {
-    const t = i / samples;
-    
-    // Bottom edge
-    const [bx, by] = transform.forward([minX + t * (maxX - minX), minY]);
-    // Top edge
-    const [tx, ty] = transform.forward([minX + t * (maxX - minX), maxY]);
-    // Left edge
-    const [lx, ly] = transform.forward([minX, minY + t * (maxY - minY)]);
-    // Right edge
-    const [rx, ry] = transform.forward([maxX, minY + t * (maxY - minY)]);
-
-    for (const [x, y] of [[bx, by], [tx, ty], [lx, ly], [rx, ry]]) {
-      if (isFinite(x) && isFinite(y)) {
-        outMinX = Math.min(outMinX, x);
-        outMinY = Math.min(outMinY, y);
-        outMaxX = Math.max(outMaxX, x);
-        outMaxY = Math.max(outMaxY, y);
+    for (let j = 0; j <= samples; j++) {
+      const sx = minX + (i / samples) * (maxX - minX);
+      const sy = minY + (j / samples) * (maxY - minY);
+      
+      try {
+        const [dx, dy] = transform.forward([sx, sy]);
+        
+        // Skip infinite or NaN values (e.g., poles in Mercator)
+        if (isFinite(dx) && isFinite(dy)) {
+          // Clamp extreme Mercator Y values (beyond ~85° latitude)
+          // This avoids near-infinite values near poles
+          const clampedY = Math.max(-20037508, Math.min(20037508, dy));
+          
+          outMinX = Math.min(outMinX, dx);
+          outMinY = Math.min(outMinY, clampedY);
+          outMaxX = Math.max(outMaxX, dx);
+          outMaxY = Math.max(outMaxY, clampedY);
+        }
+      } catch {
+        // Transform failed for this point, skip it
       }
     }
   }

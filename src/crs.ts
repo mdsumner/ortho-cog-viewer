@@ -15,6 +15,9 @@ export function registerProjections(): void {
   // Antarctic Polar Stereographic
   proj4.defs('EPSG:3031', '+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs');
   
+  // IBCSO Polar Stereographic (WGS 84 / IBCSO Polar Stereographic)
+  proj4.defs('EPSG:9354', '+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs');
+  
   // Arctic Polar Stereographic  
   proj4.defs('EPSG:3995', '+proj=stere +lat_0=90 +lat_ts=71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs');
 
