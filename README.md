@@ -52,3 +52,10 @@ Australian topo map in EPSG:3577 (GDA94 / Australian Albers)
 - Photometric interpretation (RGB, grayscale, min/max scaling)
 - Multiple layer support
 - Tile server sources (WMTS/XYZ)
+
+## Related
+
+- [deck.gl-raster](https://github.com/developmentseed/deck.gl-raster) - this is now used by source.coop previews! 
+- [textures R package](https://github.com/hypertidy/textures)
+- [earlier R impl. anglr](https://github.com/hypertidy/anglr)
+- [textures in rgl discussed in a mesh-spatial talk](https://youtu.be/EnwkVXLRUYI?si=8TvruDeg1F1FnCa8&t=957)
