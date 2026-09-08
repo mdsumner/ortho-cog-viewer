@@ -21,7 +21,7 @@ export interface SourceBounds {
  * Compute texture coordinates by inverse-projecting display positions to source space.
  * 
  * Transform chain for each vertex:
- *   display_coord → WGS84 → source_crs → normalized [0,1]
+ *   display_coord -> WGS84 -> source_crs -> normalized [0,1]
  * 
  * @param positions [x, y, z, x, y, z, ...] in display CRS (z ignored)
  * @param displayCRS EPSG code or proj4 string for display space
@@ -38,8 +38,8 @@ export function computeTextureCoords(
   const numVertices = positions.length / 3;  // xyz per vertex
   const texCoords = new Float32Array(numVertices * 2);
 
-  // Build transform: display → source (via WGS84 as intermediate)
-  // proj4(from, to).forward() transforms from → to
+  // Build transform: display -> source (via WGS84 as intermediate)
+  // proj4(from, to).forward() transforms from -> to
   const displayToSource = proj4(displayCRS, sourceCRS);
 
   const { minX, minY, maxX, maxY } = sourceBounds;
@@ -50,10 +50,10 @@ export function computeTextureCoords(
     const displayX = positions[i * 3 + 0];
     const displayY = positions[i * 3 + 1];
 
-    // Transform display coord → source coord
+    // Transform display coord -> source coord
     const [sourceX, sourceY] = displayToSource.forward([displayX, displayY]);
 
-    // Source coord → normalized texture coordinates [0, 1]
+    // Source coord -> normalized texture coordinates [0, 1]
     let u = (sourceX - minX) / sourceWidth;
     let v = (sourceY - minY) / sourceHeight;
 
@@ -68,6 +68,98 @@ export function computeTextureCoords(
   return texCoords;
 }
 
+export interface MaskedTextureCoords {
+  texCoords: Float32Array;
+  /** 1 where the display vertex has a well-defined position on the globe, 0 otherwise */
+  valid: Uint8Array;
+  validCount: number;
+}
+
+/**
+ * Like computeTextureCoords, but also reports which vertices are geometrically valid.
+ *
+ * A display-space vertex is valid when display -> lon/lat -> display returns
+ * (within tolerance) to where it started. That single test catches every
+ * projection-agnostic failure mode we care about: beyond the horizon of an
+ * azimuthal projection (proj4 clamps the inverse to the rim), past the poles
+ * of Mercator, the antipode of an aeqd, NaN/undefined from the transform, etc.
+ *
+ * @param tolerance Max round-trip error, in display CRS units. Something like
+ *                  a small fraction of a mesh cell is a good choice.
+ */
+export function computeTextureCoordsMasked(
+  positions: Float32Array,
+  displayCRS: string,
+  sourceCRS: string,
+  sourceBounds: SourceBounds,
+  tolerance: number
+): MaskedTextureCoords {
+  const numVertices = positions.length / 3;
+  const texCoords = new Float32Array(numVertices * 2);
+  const valid = new Uint8Array(numVertices);
+  let validCount = 0;
+
+  const displayToGeo = proj4(displayCRS, 'EPSG:4326');
+  const geoToDisplay = proj4('EPSG:4326', displayCRS);
+  const geoToSource = proj4('EPSG:4326', sourceCRS);
+
+  const { minX, minY, maxX, maxY } = sourceBounds;
+  const sourceWidth = maxX - minX;
+  const sourceHeight = maxY - minY;
+  const tol2 = tolerance * tolerance;
+
+  for (let i = 0; i < numVertices; i++) {
+    const dx = positions[i * 3 + 0];
+    const dy = positions[i * 3 + 1];
+
+    let ok = false;
+    let u = -1, v = -1;
+    try {
+      const [lon, lat] = displayToGeo.forward([dx, dy]);
+      if (isFinite(lon) && isFinite(lat)) {
+        const [bx, by] = geoToDisplay.forward([lon, lat]);
+        const ex = bx - dx, ey = by - dy;
+        if (isFinite(ex) && isFinite(ey) && ex * ex + ey * ey <= tol2) {
+          const [sx, sy] = geoToSource.forward([lon, lat]);
+          if (isFinite(sx) && isFinite(sy)) {
+            u = (sx - minX) / sourceWidth;
+            v = 1.0 - (sy - minY) / sourceHeight;
+            ok = true;
+          }
+        }
+      }
+    } catch {
+      ok = false;
+    }
+
+    texCoords[i * 2 + 0] = u;
+    texCoords[i * 2 + 1] = v;
+    if (ok) {
+      valid[i] = 1;
+      validCount++;
+    }
+  }
+
+  return { texCoords, valid, validCount };
+}
+
+/**
+ * Drop every triangle that touches an invalid vertex.
+ */
+export function filterIndices(indices: Uint32Array, valid: Uint8Array): Uint32Array {
+  const out = new Uint32Array(indices.length);
+  let n = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t], b = indices[t + 1], c = indices[t + 2];
+    if (valid[a] && valid[b] && valid[c]) {
+      out[n++] = a;
+      out[n++] = b;
+      out[n++] = c;
+    }
+  }
+  return out.subarray(0, n);
+}
+
 /**
  * Transform bounds from one CRS to another.
  * Samples along edges AND interior to handle non-linear transforms
@@ -80,6 +172,8 @@ export function transformBounds(
   samples: number = 20
 ): SourceBounds {
   const transform = proj4(fromCRS, toCRS);
+  // Only Web Mercator needs its polar blow-up clamped; other targets keep their values.
+  const isMercator = /3857|900913|\+proj=merc/.test(toCRS);
   
   let outMinX = Infinity;
   let outMinY = Infinity;
@@ -99,9 +193,9 @@ export function transformBounds(
         
         // Skip infinite or NaN values (e.g., poles in Mercator)
         if (isFinite(dx) && isFinite(dy)) {
-          // Clamp extreme Mercator Y values (beyond ~85° latitude)
+          // Clamp extreme Mercator Y values (beyond ~85 deg latitude)
           // This avoids near-infinite values near poles
-          const clampedY = Math.max(-20037508, Math.min(20037508, dy));
+          const clampedY = isMercator ? Math.max(-20037508, Math.min(20037508, dy)) : dy;
           
           outMinX = Math.min(outMinX, dx);
           outMinY = Math.min(outMinY, clampedY);
