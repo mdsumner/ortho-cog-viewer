@@ -89,6 +89,46 @@
         padding: 1px 4px;
         font-size: 10px;
       }
+      .title-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .title-row a {
+        color: #9cf;
+        font-size: 10px;
+      }
+      .title-row button {
+        margin-left: auto;
+      }
+      #controls.collapsed fieldset,
+      #controls.collapsed #info {
+        display: none;
+      }
+      #controls select {
+        font-family: monospace;
+        font-size: 11px;
+        padding: 3px;
+        max-width: 280px;
+      }
+      #controls input.small {
+        width: 60px;
+      }
+      .hint {
+        color: #aaa;
+        font-size: 10px;
+      }
+      .crs-string {
+        display: inline-block;
+        max-width: 380px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+      }
+      #info {
+        user-select: text;
+      }
       fieldset {
         border: 1px solid #444;
         padding: 6px;
@@ -101,17 +141,47 @@
   </head>
   <body>
     <div id="controls">
-      <strong>Ortho COG Viewer</strong>
+      <div class="title-row">
+        <strong>Ortho COG Viewer</strong>
+        <a href="https://github.com/mdsumner/ortho-cog-viewer" target="_blank" rel="noopener">source</a>
+        <button id="panel-toggle" title="Collapse/expand panel">_</button>
+      </div>
       
       <fieldset>
         <legend>Display</legend>
         <div class="control-row">
-          <label>CRS:</label>
-          <input type="text" id="display-crs" class="crs" value="EPSG:3857" />
+          <label>Mode:</label>
+          <select id="mode">
+            <option value="fixed">fixed extent</option>
+            <option value="centred">centred projection</option>
+          </select>
         </div>
-        <div class="control-row">
-          <label>Extent:</label>
-          <input type="text" id="extent" class="extent" value="-40000000,40000000,-40000000,40000000" />
+        <div id="fixed-panel">
+          <div class="control-row">
+            <label>CRS:</label>
+            <input type="text" id="display-crs" class="crs" value="EPSG:3857" />
+          </div>
+          <div class="control-row">
+            <label>Extent:</label>
+            <input type="text" id="extent" class="extent" value="-40000000,40000000,-40000000,40000000" />
+          </div>
+        </div>
+        <div id="centred-panel" hidden>
+          <div class="control-row">
+            <label>Proj:</label>
+            <select id="proj"></select>
+          </div>
+          <div class="control-row">
+            <label></label>
+            <input type="text" id="proj-template" class="extent" hidden
+                   placeholder="+proj=... +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m" />
+          </div>
+          <div class="control-row">
+            <label>Centre:</label>
+            <input type="text" id="centre-lon" class="small" value="0" title="longitude" />
+            <input type="text" id="centre-lat" class="small" value="-90" title="latitude" />
+            <span class="hint">lon, lat (drag the map to move it)</span>
+          </div>
         </div>
         <div class="control-row">
           <label>Grid:</label>
@@ -120,7 +190,7 @@
           <button id="apply-crs-btn">Apply</button>
         </div>
       </fieldset>
-      
+
       <fieldset>
         <legend>Layers</legend>
         <input type="text" id="cog-url" placeholder="Enter COG URL..." />

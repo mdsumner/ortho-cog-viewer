@@ -216,6 +216,15 @@ export class ViewController {
     this.onChange(this.state);
   }
 
+  /**
+   * Replace the state without firing onChange. Used by the centred-projection
+   * mode, which consumes the accumulated pan offset each frame and resets the
+   * centre to the origin.
+   */
+  setState(partial: Partial<ViewState>): void {
+    Object.assign(this.state, partial);
+  }
+
   getState(): ViewState {
     return { ...this.state };
   }

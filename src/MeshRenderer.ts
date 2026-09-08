@@ -16,6 +16,9 @@ export class MeshRenderer {
   private program: WebGLProgram | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   private texture: WebGLTexture | null = null;
+  private posBuffer: WebGLBuffer | null = null;
+  private texBuffer: WebGLBuffer | null = null;
+  private indexBuffer: WebGLBuffer | null = null;
   private indexCount: number = 0;
 
   // Uniform locations
@@ -100,36 +103,59 @@ export class MeshRenderer {
   setMesh(mesh: MeshData): void {
     const gl = this.gl;
 
-    // Create VAO
-    this.vao = gl.createVertexArray();
-    gl.bindVertexArray(this.vao);
+    // Allocate the VAO and buffers once; later calls just re-upload data.
+    // The centred-projection mode calls this on every pan, so leaking a VAO
+    // per call would be fatal.
+    if (!this.vao) {
+      this.vao = gl.createVertexArray();
+      gl.bindVertexArray(this.vao);
 
-    // Position buffer
-    const posBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
+      this.posBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+      const posLoc = gl.getAttribLocation(this.program!, 'a_position');
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
 
-    const posLoc = gl.getAttribLocation(this.program!, 'a_position');
-    gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+      this.texBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.texBuffer);
+      const texLoc = gl.getAttribLocation(this.program!, 'a_texCoord');
+      gl.enableVertexAttribArray(texLoc);
+      gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // TexCoord buffer
-    const texBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, mesh.texCoords, gl.STATIC_DRAW);
+      this.indexBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+    } else {
+      gl.bindVertexArray(this.vao);
+    }
 
-    const texLoc = gl.getAttribLocation(this.program!, 'a_texCoord');
-    gl.enableVertexAttribArray(texLoc);
-    gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.DYNAMIC_DRAW);
 
-    // Index buffer
-    const indexBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.texBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.texCoords, gl.DYNAMIC_DRAW);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.DYNAMIC_DRAW);
 
     this.indexCount = mesh.indices.length;
 
     gl.bindVertexArray(null);
+  }
+
+  /**
+   * Release GPU resources. Call when a layer is removed.
+   */
+  dispose(): void {
+    const gl = this.gl;
+    if (this.vao) gl.deleteVertexArray(this.vao);
+    if (this.posBuffer) gl.deleteBuffer(this.posBuffer);
+    if (this.texBuffer) gl.deleteBuffer(this.texBuffer);
+    if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
+    if (this.texture) gl.deleteTexture(this.texture);
+    this.vao = null;
+    this.posBuffer = this.texBuffer = this.indexBuffer = null;
+    this.texture = null;
+    this.indexCount = 0;
   }
 
   setTexture(image: HTMLImageElement | HTMLCanvasElement): void {
@@ -181,7 +207,7 @@ export class MeshRenderer {
   ): void {
     const gl = this.gl;
 
-    if (!this.program || !this.vao || !this.texture) {
+    if (!this.program || !this.vao || !this.texture || this.indexCount === 0) {
       return;
     }
 

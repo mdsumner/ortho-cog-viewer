@@ -24,17 +24,18 @@ export interface OverviewInfo {
   resolution: number;  // world units per pixel
 }
 
-// Cache the tiff object for reuse
-let cachedTiff: GeoTIFF | null = null;
-let cachedUrl: string | null = null;
+// One open GeoTIFF handle per URL, so multiple layers don't evict each other.
+// The promise is cached (not the result) so concurrent callers share one open.
+const tiffCache = new Map<string, Promise<GeoTIFF>>();
 
 async function getTiff(url: string): Promise<GeoTIFF> {
-  if (cachedTiff && cachedUrl === url) {
-    return cachedTiff;
+  let p = tiffCache.get(url);
+  if (!p) {
+    p = fromUrl(url);
+    tiffCache.set(url, p);
+    p.catch(() => tiffCache.delete(url));
   }
-  cachedTiff = await fromUrl(url);
-  cachedUrl = url;
-  return cachedTiff;
+  return p;
 }
 
 /**

@@ -16,15 +16,17 @@ export interface GridMesh {
  * Generate a regular NxN grid of triangles.
  * 
  * @param bounds [minX, minY, maxX, maxY] in display CRS
- * @param gridSize Number of cells per side (e.g., 16 = 16x16 grid = 512 triangles)
+ * @param gridSize Number of cells across (e.g., 16 = 16x16 grid = 512 triangles)
+ * @param gridRows Number of cells down; defaults to gridSize (square grid)
  */
 export function generateGridMesh(
   bounds: [number, number, number, number],
-  gridSize: number = 16
+  gridSize: number = 16,
+  gridRows: number = gridSize
 ): GridMesh {
   const [minX, minY, maxX, maxY] = bounds;
   const cols = gridSize;
-  const rows = gridSize;
+  const rows = gridRows;
   const numVertices = (cols + 1) * (rows + 1);
   const numTriangles = cols * rows * 2;
 
