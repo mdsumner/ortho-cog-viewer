@@ -18,6 +18,8 @@ import { buildLayerGeometry, isLongLat, transformBounds, SourceBounds } from './
 import { registerProjections, ensureCRS } from './crs';
 import { loadCOGMetadata, getOverviews, selectOverview, loadOverview, OverviewInfo } from './cog';
 import { MeshRenderer } from './MeshRenderer';
+import { LineRenderer } from './LineRenderer';
+import { buildGraticule } from './graticule';
 import { ViewController, ViewState } from './ViewController';
 import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './centred';
 import proj4 from 'proj4';
@@ -37,6 +39,8 @@ const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/
 let mode: Mode = 'centred';
 let gridSize = 64;
 let showWireframe = false;
+let showGraticule = true;
+let graticuleCRS = '';        // display CRS the current graticule was built for
 
 // fixed mode
 let displayCRS = 'EPSG:3857';
@@ -89,6 +93,9 @@ let centreLonInput: HTMLInputElement;
 let centreLatInput: HTMLInputElement;
 let gridSizeInput: HTMLInputElement;
 let wireframeInput: HTMLInputElement;
+let graticuleInput: HTMLInputElement;
+let gratMinor: LineRenderer;
+let gratMajor: LineRenderer;
 let vertexCountEl: HTMLElement;
 let infoEl: HTMLElement;
 let layersEl: HTMLElement;
@@ -183,6 +190,19 @@ function updateLayerMesh(layer: Layer): void {
  */
 function sourceWrapsU(crs: string, b: SourceBounds): boolean {
   return isLongLat(crs) && (b.maxX - b.minX) >= 359.9;
+}
+
+/**
+ * Rebuild the graticule if the display CRS changed since it was last built.
+ */
+function updateGraticule(): void {
+  if (!showGraticule || !baseMesh) return;
+  const crs = currentDisplayCRS();
+  if (crs === graticuleCRS) return;
+  const g = buildGraticule(crs, { stepDeg: 10, sampleDeg: 1, tolerance: meshCellSize() * 1e-2 });
+  gratMinor.setLines(g.minor);
+  gratMajor.setLines(g.major);
+  graticuleCRS = crs;
 }
 
 function updateAllLayerMeshes(): void {
@@ -472,6 +492,11 @@ function render(state: ViewState): void {
       canvas.clientHeight
     );
   }
+  if (showGraticule) {
+    updateGraticule();
+    gratMinor.render(state.centerX, state.centerY, state.zoom, [1, 1, 1, 0.25]);
+    gratMajor.render(state.centerX, state.centerY, state.zoom, [1, 1, 1, 0.6]);
+  }
   if (showWireframe) {
     const colors: [number, number, number, number][] = [
       [1, 1, 0, 0.55], [0, 1, 1, 0.55], [1, 0.4, 1, 0.55], [0.5, 1, 0.5, 0.55]
@@ -539,6 +564,7 @@ function syncUI(): void {
   centredPanel.hidden = mode !== 'centred';
   gridSizeInput.value = String(gridSize);
   wireframeInput.checked = showWireframe;
+  graticuleInput.checked = showGraticule;
   displayCrsInput.value = displayCRS;
   extentInput.value = [meshExtent.minX, meshExtent.maxX, meshExtent.minY, meshExtent.maxY].join(',');
   if (isPresetName(centredProj)) {
@@ -566,6 +592,9 @@ function applyUrlParams(params: URLSearchParams): void {
 
   const w = params.get('wire');
   if (w !== null) showWireframe = w === '1' || w === 'true';
+
+  const gr = params.get('grat');
+  if (gr !== null) showGraticule = gr === '1' || gr === 'true';
 
   const crs = params.get('crs');
   if (crs) displayCRS = crs;
@@ -618,6 +647,7 @@ function writeUrl(): void {
   p.set('zoom', state.zoom.toFixed(3));
   if (gridSize !== 64) p.set('grid', String(gridSize));
   if (showWireframe) p.set('wire', '1');
+  if (!showGraticule) p.set('grat', '0');
   for (const l of layers) p.append('url', l.url);
   history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
 }
@@ -640,6 +670,7 @@ async function main() {
   centreLatInput = document.getElementById('centre-lat') as HTMLInputElement;
   gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
   wireframeInput = document.getElementById('wireframe') as HTMLInputElement;
+  graticuleInput = document.getElementById('graticule') as HTMLInputElement;
   vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
   layersEl = document.getElementById('layers')!;
@@ -685,6 +716,8 @@ async function main() {
     return;
   }
   gl = glContext;
+  gratMinor = new LineRenderer(gl);
+  gratMajor = new LineRenderer(gl);
 
   // State from URL, then mesh and view
   const params = new URLSearchParams(location.search);
@@ -710,6 +743,12 @@ async function main() {
     if (e.key === 'Enter') loadBtn.click();
   });
   applyBtn.addEventListener('click', applyDisplaySettings);
+  graticuleInput.addEventListener('change', () => {
+    showGraticule = graticuleInput.checked;
+    graticuleCRS = '';
+    render(viewController.getState());
+    scheduleUrlUpdate();
+  });
   wireframeInput.addEventListener('change', () => {
     showWireframe = wireframeInput.checked;
     render(viewController.getState());

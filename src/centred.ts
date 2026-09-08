@@ -26,8 +26,9 @@ export interface CentredPreset {
 }
 
 /**
- * Templates use {lon_0} and {lat_0} placeholders. All of these are azimuthal
- * so that the tangent point is exactly the screen centre.
+ * Templates use {lon_0} and {lat_0} placeholders. Most of these are azimuthal
+ * so that the tangent point is exactly the screen centre; anything with a
+ * centre parameter works (omerc uses lonc, so the placeholder goes there).
  *
  * Note: proj4js does not default x_0/y_0 and silently returns NaN without
  * them, so custom templates must spell out +x_0=0 +y_0=0 too.
@@ -52,6 +53,10 @@ export const CENTRED_PRESETS: Record<string, CentredPreset> = {
   gnom: {
     label: 'Gnomonic',
     template: '+proj=gnom +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  omerc: {
+    label: 'Oblique Mercator (near north-up)',
+    template: '+proj=omerc +alpha=1 +gamma=2 +lonc={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   }
 };
 
