@@ -168,3 +168,5 @@ crs.ts            - proj4 definitions
 - [textures R package](https://github.com/hypertidy/textures)
 - [earlier R impl. anglr](https://github.com/hypertidy/anglr)
 - [textures in rgl discussed in a mesh-spatial talk](https://youtu.be/EnwkVXLRUYI?si=8TvruDeg1F1FnCa8&t=957)
+- [Jason Davies, naturally](https://www.jasondavies.com/)
+
