@@ -73,6 +73,10 @@ export interface MaskedTextureCoords {
   /** 1 where the display vertex has a well-defined position on the globe, 0 otherwise */
   valid: Uint8Array;
   validCount: number;
+  /** source-CRS bounding box of the valid vertices (null if none) */
+  sourceBBox: SourceBounds | null;
+  /** display-CRS bounding box of the valid vertices (null if none) */
+  displayBBox: SourceBounds | null;
 }
 
 /**
@@ -108,6 +112,9 @@ export function computeTextureCoordsMasked(
   const sourceHeight = maxY - minY;
   const tol2 = tolerance * tolerance;
 
+  let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+  let dMinX = Infinity, dMinY = Infinity, dMaxX = -Infinity, dMaxY = -Infinity;
+
   for (let i = 0; i < numVertices; i++) {
     const dx = positions[i * 3 + 0];
     const dy = positions[i * 3 + 1];
@@ -125,6 +132,14 @@ export function computeTextureCoordsMasked(
             u = (sx - minX) / sourceWidth;
             v = 1.0 - (sy - minY) / sourceHeight;
             ok = true;
+            if (sx < sMinX) sMinX = sx;
+            if (sx > sMaxX) sMaxX = sx;
+            if (sy < sMinY) sMinY = sy;
+            if (sy > sMaxY) sMaxY = sy;
+            if (dx < dMinX) dMinX = dx;
+            if (dx > dMaxX) dMaxX = dx;
+            if (dy < dMinY) dMinY = dy;
+            if (dy > dMaxY) dMaxY = dy;
           }
         }
       }
@@ -140,7 +155,11 @@ export function computeTextureCoordsMasked(
     }
   }
 
-  return { texCoords, valid, validCount };
+  return {
+    texCoords, valid, validCount,
+    sourceBBox: validCount ? { minX: sMinX, minY: sMinY, maxX: sMaxX, maxY: sMaxY } : null,
+    displayBBox: validCount ? { minX: dMinX, minY: dMinY, maxX: dMaxX, maxY: dMaxY } : null
+  };
 }
 
 /**
@@ -167,6 +186,8 @@ export interface LayerGeometry {
   triangleCount: number;
   validFraction: number;     // fraction of base-mesh vertices that were on-globe
   seamDropped: number;       // triangles dropped because they contain a pole
+  sourceBBox: SourceBounds | null;
+  displayBBox: SourceBounds | null;
 }
 
 /**
@@ -254,7 +275,9 @@ export function buildLayerGeometry(
     indices: idx,
     triangleCount: n,
     validFraction: masked.validCount / (positions.length / 3),
-    seamDropped
+    seamDropped,
+    sourceBBox: masked.sourceBBox,
+    displayBBox: masked.displayBBox
   };
 }
 

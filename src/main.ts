@@ -14,9 +14,11 @@
  */
 
 import { generateGridMesh, GridMesh } from './mesh';
-import { buildLayerGeometry, isLongLat, transformBounds, SourceBounds } from './uv';
-import { registerProjections, ensureCRS } from './crs';
-import { loadCOGMetadata, getOverviews, selectOverview, loadOverview, OverviewInfo } from './cog';
+import { buildLayerGeometry, transformBounds, SourceBounds } from './uv';
+import { registerProjections } from './crs';
+import { RasterSource, planFetch, contains } from './source';
+import { COGSource } from './cogSource';
+import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
 import { MeshRenderer } from './MeshRenderer';
 import { LineRenderer } from './LineRenderer';
 import { buildGraticule } from './graticule';
@@ -63,15 +65,24 @@ let meshCssH = 0;
 interface Layer {
   id: number;
   url: string;
-  sourceCRS: string;
-  sourceBounds: SourceBounds;
-  overviews: OverviewInfo[];
-  currentOverviewIndex: number;
+  source: RasterSource;
   renderer: MeshRenderer;
+  /** extent of the texture currently on the GPU, in source CRS */
+  texBounds: SourceBounds;
+  texLevel: number;
+  texSize: string;
+  hasTexture: boolean;
   isLoading: boolean;
+  fetchSeq: number;
+  /** the request in flight, so an identical plan is not issued twice */
+  pending: { level: number; region: SourceBounds } | null;
   validFraction: number;
-  wrapU: boolean;
+  /** what the last mesh build said the view needs */
+  needBBox: SourceBounds | null;
+  needPx: { w: number; h: number } | null;
 }
+
+const MAX_TEXTURE_DIM = 4096;
 
 let layers: Layer[] = [];
 let nextLayerId = 0;
@@ -109,17 +120,6 @@ function currentDisplayCRS(): string {
     return centredCRS(resolveTemplate(centredProj), centreLon, centreLat);
   }
   return displayCRS;
-}
-
-function rgbaToCanvas(data: Uint8ClampedArray, width: number, height: number): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = height;
-  const ctx = c.getContext('2d')!;
-  const imageData = ctx.createImageData(width, height);
-  imageData.data.set(data);
-  ctx.putImageData(imageData, 0, 0);
-  return c;
 }
 
 /**
@@ -168,16 +168,28 @@ function updateVertexCount(): void {
  */
 function updateLayerMesh(layer: Layer): void {
   const crs = currentDisplayCRS();
+  const wrapU = textureWrapsU(layer);
   const geom = buildLayerGeometry(
     baseMesh.positions,
     baseMesh.indices,
     crs,
-    layer.sourceCRS,
-    layer.sourceBounds,
+    layer.source.crs,
+    layer.texBounds,
     meshCellSize() * 1e-2,
-    layer.wrapU
+    wrapU
   );
   layer.validFraction = geom.validFraction;
+  layer.needBBox = geom.sourceBBox;
+  if (geom.displayBBox) {
+    const scale = Math.pow(2, viewController.getState().zoom);
+    layer.needPx = {
+      w: Math.max(1, (geom.displayBBox.maxX - geom.displayBBox.minX) * scale),
+      h: Math.max(1, (geom.displayBBox.maxY - geom.displayBBox.minY) * scale)
+    };
+  } else {
+    layer.needPx = null;
+  }
+  layer.renderer.setWrapU(wrapU);
   layer.renderer.setMesh({
     positions: geom.positions,
     texCoords: geom.texCoords,
@@ -186,10 +198,14 @@ function updateLayerMesh(layer: Layer): void {
 }
 
 /**
- * A source is periodic in u when it is geographic and spans all longitudes.
+ * u is periodic only when the source is periodic AND the texture on the GPU
+ * spans the source's full width.
  */
-function sourceWrapsU(crs: string, b: SourceBounds): boolean {
-  return isLongLat(crs) && (b.maxX - b.minX) >= 359.9;
+function textureWrapsU(layer: Layer): boolean {
+  if (!layer.source.wrapU) return false;
+  const full = layer.source.bounds.maxX - layer.source.bounds.minX;
+  const tex = layer.texBounds.maxX - layer.texBounds.minX;
+  return tex >= full * 0.999;
 }
 
 /**
@@ -361,13 +377,13 @@ function defaultCentredZoom(): number {
  */
 function fitLayer(layer: Layer): void {
   if (mode === 'centred') {
-    const b = layer.sourceBounds;
-    const toGeo = proj4(layer.sourceCRS, 'EPSG:4326');
+    const b = layer.source.bounds;
+    const toGeo = proj4(layer.source.crs, 'EPSG:4326');
     const [lon, lat] = toGeo.forward([(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2]);
     if (!isFinite(lon) || !isFinite(lat)) return;
     [centreLon, centreLat] = normaliseLonLat(lon, lat);
     const crs = currentDisplayCRS();
-    const tb = transformBounds(b, layer.sourceCRS, crs, 30);
+    const tb = transformBounds(b, layer.source.crs, crs, 30);
     const w = Math.max(tb.maxX - tb.minX, tb.maxY - tb.minY);
     const zoom = isFinite(w) && w > 0
       ? Math.log2(Math.min(canvas.clientWidth, canvas.clientHeight) / (w * 1.1))
@@ -375,7 +391,7 @@ function fitLayer(layer: Layer): void {
     makeViewController({ centerX: 0, centerY: 0, zoom });
     syncCentreInputs();
   } else {
-    const tb = transformBounds(layer.sourceBounds, layer.sourceCRS, displayCRS, 30);
+    const tb = transformBounds(layer.source.bounds, layer.source.crs, displayCRS, 30);
     viewController.fitBounds(tb.minX, tb.minY, tb.maxX, tb.maxY);
   }
 }
@@ -384,47 +400,46 @@ function fitLayer(layer: Layer): void {
 // Layers
 // ---------------------------------------------------------------------------
 
+async function openSource(url: string): Promise<RasterSource> {
+  if (url.startsWith('preset:')) return XYZSource.fromPreset(url.slice(7));
+  if (isTileTemplate(url)) return XYZSource.fromTemplate(url);
+  return COGSource.open(url);
+}
+
 async function addLayer(url: string): Promise<Layer | null> {
   console.log('Adding layer:', url);
   try {
-    const metadata = await loadCOGMetadata(url);
-    if (!metadata.crs) {
-      throw new Error('COG has no CRS information');
-    }
-    if (!ensureCRS(metadata.crs)) {
-      throw new Error(`Source CRS ${metadata.crs} is not registered in crs.ts (UTM zones are synthesised; other EPSG codes need a def)`);
-    }
-
-    const overviews = await getOverviews(url, metadata.bounds);
+    const source = await openSource(url);
     const renderer = new MeshRenderer(gl);
-    const wrapU = sourceWrapsU(metadata.crs, metadata.bounds);
-    renderer.setWrapU(wrapU);
 
     const layer: Layer = {
       id: nextLayerId++,
       url,
-      sourceCRS: metadata.crs,
-      sourceBounds: metadata.bounds,
-      overviews,
-      currentOverviewIndex: -1,
+      source,
       renderer,
+      texBounds: { ...source.bounds },
+      texLevel: -1,
+      texSize: '',
+      hasTexture: false,
       isLoading: false,
+      fetchSeq: 0,
+      pending: null,
       validFraction: 0,
-      wrapU
+      needBBox: null,
+      needPx: null
     };
 
     updateLayerMesh(layer);
     layers.push(layer);
-
-    await updateLayerOverview(layer, viewController.getState());
-
     updateUI();
+
+    await updateLayerTexture(layer);
     render(viewController.getState());
     scheduleUrlUpdate();
     return layer;
   } catch (err) {
     console.error('Failed to add layer:', err);
-    alert(`Failed to load COG: ${err}`);
+    alert(`Failed to load source: ${err}`);
     return null;
   }
 }
@@ -443,24 +458,41 @@ function clearLayers(): void {
   layers = [];
 }
 
-async function updateLayerOverview(layer: Layer, state: ViewState): Promise<void> {
-  if (layer.isLoading || layer.overviews.length === 0) return;
+/**
+ * Fetch the texture region the current view needs, if it differs from what
+ * is already on the GPU. Responses that arrive after a newer request are
+ * dropped.
+ */
+async function updateLayerTexture(layer: Layer): Promise<void> {
+  const plan = planFetch(layer.source, layer.needBBox, layer.needPx, MAX_TEXTURE_DIM);
+  if (!plan) return;
 
-  const displayRes = 1 / Math.pow(2, state.zoom);
-  const needed = selectOverview(layer.overviews, displayRes);
+  if (layer.hasTexture && plan.level.index === layer.texLevel && contains(layer.texBounds, plan.need)) {
+    return;  // current texture already covers the need at the right level
+  }
+  if (layer.pending && layer.pending.level === plan.level.index && contains(layer.pending.region, plan.need)) {
+    return;  // a request that will cover it is already in flight
+  }
 
-  if (needed.index !== layer.currentOverviewIndex) {
-    layer.isLoading = true;
-    layer.currentOverviewIndex = needed.index;
-    updateUI();
-    try {
-      const data = await loadOverview(layer.url, needed.index);
-      const textureCanvas = rgbaToCanvas(data.data, data.width, data.height);
-      layer.renderer.updateTexture(textureCanvas);
-      render(viewController.getState());
-    } catch (err) {
-      console.error('Failed to load overview:', err);
-    } finally {
+  const seq = ++layer.fetchSeq;
+  layer.pending = { level: plan.level.index, region: plan.region };
+  layer.isLoading = true;
+  updateUI();
+  try {
+    const data = await layer.source.fetch(plan.level.index, plan.region, MAX_TEXTURE_DIM);
+    if (seq !== layer.fetchSeq) return;  // superseded
+    layer.texBounds = data.bounds;
+    layer.texLevel = plan.level.index;
+    layer.texSize = `${data.canvas.width}x${data.canvas.height}`;
+    layer.hasTexture = true;
+    layer.renderer.updateTexture(data.canvas);
+    updateLayerMesh(layer);   // UVs are relative to the new texture bounds
+    render(viewController.getState());
+  } catch (err) {
+    console.error('Failed to fetch texture:', err);
+  } finally {
+    if (seq === layer.fetchSeq) {
+      layer.pending = null;
       layer.isLoading = false;
       updateUI();
     }
@@ -468,10 +500,10 @@ async function updateLayerOverview(layer: Layer, state: ViewState): Promise<void
 }
 
 let updateTimeout: number | null = null;
-function scheduleOverviewUpdates(state: ViewState): void {
+function scheduleOverviewUpdates(_state: ViewState): void {
   if (updateTimeout) clearTimeout(updateTimeout);
   updateTimeout = window.setTimeout(() => {
-    layers.forEach(layer => updateLayerOverview(layer, state));
+    layers.forEach(layer => updateLayerTexture(layer));
     updateTimeout = null;
   }, 150);
 }
@@ -534,18 +566,18 @@ function formatRes(v: number): string {
 
 function updateUI(): void {
   layersEl.innerHTML = layers.map(layer => {
-    const ov = layer.currentOverviewIndex >= 0 && layer.overviews[layer.currentOverviewIndex];
-    const ovInfo = ov ? `${ov.width}x${ov.height}` : '...';
+    const src = layer.source;
+    const lvl = layer.hasTexture ? `L${layer.texLevel} ${layer.texSize}` : '...';
     const loading = layer.isLoading ? ' (loading)' : '';
-    const shortUrl = layer.url.split('/').pop() || layer.url;
     const pct = Math.round(layer.validFraction * 100);
+    const attr = src.attribution ? `<div class="attribution">${src.attribution}</div>` : '';
     return `
       <div class="layer-item">
         <button data-remove="${layer.id}" title="Remove layer">x</button>
         <button data-fit="${layer.id}" title="Centre the view on this layer">fit</button>
-        <span title="${layer.url}">${shortUrl}</span>
-        <span>(${layer.sourceCRS}, ${ovInfo}${loading}, ${pct}% on-globe)</span>
-      </div>
+        <span title="${layer.url}">${src.label}</span>
+        <span>(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)</span>
+      </div>${attr}
     `;
   }).join('');
 }
@@ -675,6 +707,19 @@ async function main() {
   infoEl = document.getElementById('info')!;
   layersEl = document.getElementById('layers')!;
   const loadBtn = document.getElementById('load-btn')!;
+  const tilePresetSelect = document.getElementById('tile-preset') as HTMLSelectElement;
+  for (const [name, preset] of Object.entries(TILE_PRESETS)) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = preset.label;
+    tilePresetSelect.appendChild(opt);
+  }
+  tilePresetSelect.addEventListener('change', () => {
+    if (tilePresetSelect.value) {
+      urlInput.value = TILE_PRESETS[tilePresetSelect.value].template;
+      tilePresetSelect.value = '';
+    }
+  });
   const addBtn = document.getElementById('add-btn')!;
   const applyBtn = document.getElementById('apply-crs-btn')!;
   const panelToggle = document.getElementById('panel-toggle')!;

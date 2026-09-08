@@ -118,6 +118,11 @@
         width: auto;
         text-align: left;
       }
+      .attribution {
+        color: #888;
+        font-size: 9px;
+        padding-left: 40px;
+      }
       .hint {
         color: #aaa;
         font-size: 10px;
@@ -204,9 +209,13 @@
 
       <fieldset>
         <legend>Layers</legend>
-        <input type="text" id="cog-url" placeholder="Enter COG URL..." />
+        <input type="text" id="cog-url" placeholder="COG URL, or tile template with {z}/{x}/{y}" />
         <button id="load-btn">Load</button>
         <button id="add-btn">Add</button>
+        <div class="control-row">
+          <label>Tiles:</label>
+          <select id="tile-preset"><option value="">presets...</option></select>
+        </div>
         <div id="layers"></div>
       </fieldset>
       
