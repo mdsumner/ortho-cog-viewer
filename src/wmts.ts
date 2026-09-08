@@ -91,10 +91,26 @@ function directChild(el: Element, local: string): Element | null {
   return c.length ? c[0] : null;
 }
 
+export interface WMTSDimension {
+  id: string;
+  default: string;
+  values: string[];
+}
+
+export interface WMTSLayerInfo {
+  id: string;
+  title: string;
+  tmsIds: string[];
+  styles: string[];
+  formats: string[];
+  resourceURLs: string[];
+  bbox84?: SourceBounds;
+  dimensions: WMTSDimension[];
+  limits: Map<string, Map<string, { minRow: number; maxRow: number; minCol: number; maxCol: number }>>;
+}
+
 export interface ParsedCapabilities {
-  layers: { id: string; title: string; tmsIds: string[]; styles: string[]; formats: string[];
-            resourceURLs: string[]; bbox84?: SourceBounds;
-            limits: Map<string, Map<string, { minRow: number; maxRow: number; minCol: number; maxCol: number }>> }[];
+  layers: WMTSLayerInfo[];
   tms: Map<string, TileMatrixSetDef>;
   getTileKvpUrl?: string;
   attribution?: string;
@@ -175,7 +191,12 @@ export function parseCapabilities(xml: string): ParsedCapabilities {
         bbox84 = { minX: lo[0], minY: lo[1], maxX: hi[0], maxY: hi[1] };
       }
     }
-    layers.push({ id, title, tmsIds, styles, formats, resourceURLs, bbox84, limits });
+    const dimensions: WMTSDimension[] = directChildren(l, 'Dimension').map(d => ({
+      id: text(directChild(d, 'Identifier')),
+      default: text(directChild(d, 'Default')),
+      values: directChildren(d, 'Value').map(text)
+    }));
+    layers.push({ id, title, tmsIds, styles, formats, resourceURLs, bbox84, dimensions, limits });
   }
 
   // KVP GetTile endpoint, if any
@@ -202,7 +223,8 @@ export function parseCapabilities(xml: string): ParsedCapabilities {
 export function selectWMTSSource(
   caps: ParsedCapabilities,
   wantLayer?: string,
-  wantTms?: string
+  wantTms?: string,
+  wantTime?: string
 ): WMTSLayerSource {
   if (caps.layers.length === 0) throw new Error('Capabilities has no layers');
   const layer = (wantLayer && caps.layers.find(l => l.id === wantLayer)) || caps.layers[0];
@@ -246,6 +268,14 @@ export function selectWMTSSource(
     .replace(/\{TileMatrix\}/gi, '{z}')
     .replace(/\{TileRow\}/gi, '{y}')
     .replace(/\{TileCol\}/gi, '{x}');
+  // Dimensions: {Time} (or whatever the identifier is) -> requested or default
+  for (const d of layer.dimensions) {
+    const value = (wantTime && /^time$/i.test(d.id)) ? wantTime : (d.default || d.values[0] || '');
+    template = template.replace(new RegExp(`\\{${d.id}\\}`, 'gi'), value);
+    if (/^time$/i.test(d.id) && caps.getTileKvpUrl && !layer.resourceURLs.length) {
+      template += `&TIME=${encodeURIComponent(value)}`;
+    }
+  }
 
   let bounds: SourceBounds | undefined;
   if (layer.bbox84) {
@@ -260,9 +290,40 @@ export function selectWMTSSource(
   return { template, tms, layerId: layer.id, title: layer.title, attribution: caps.attribution, bounds };
 }
 
-export async function loadWMTS(url: string, wantLayer?: string, wantTms?: string): Promise<WMTSLayerSource> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`GetCapabilities failed: HTTP ${res.status}`);
-  const xml = await res.text();
-  return selectWMTSSource(parseCapabilities(xml), wantLayer, wantTms);
+const capsCache = new Map<string, Promise<ParsedCapabilities>>();
+
+/**
+ * Fetch and parse a capabilities document, cached per URL.
+ */
+export function fetchCapabilities(url: string): Promise<ParsedCapabilities> {
+  let p = capsCache.get(url);
+  if (!p) {
+    p = (async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`GetCapabilities failed: HTTP ${res.status}`);
+      return parseCapabilities(await res.text());
+    })();
+    capsCache.set(url, p);
+    p.catch(() => capsCache.delete(url));
+  }
+  return p;
+}
+
+/**
+ * Split "caps.xml#layer=a&tms=b&time=c" into the URL and its selections.
+ */
+export function splitCapabilitiesUrl(url: string): { url: string; layer?: string; tms?: string; time?: string } {
+  const hash = url.indexOf('#');
+  if (hash < 0) return { url };
+  const frag = new URLSearchParams(url.slice(hash + 1));
+  return {
+    url: url.slice(0, hash),
+    layer: frag.get('layer') || undefined,
+    tms: frag.get('tms') || undefined,
+    time: frag.get('time') || undefined
+  };
+}
+
+export async function loadWMTS(url: string, wantLayer?: string, wantTms?: string, wantTime?: string): Promise<WMTSLayerSource> {
+  return selectWMTSSource(await fetchCapabilities(url), wantLayer, wantTms, wantTime);
 }

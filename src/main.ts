@@ -19,7 +19,8 @@ import { registerProjections } from './crs';
 import { RasterSource, planFetch, contains } from './source';
 import { COGSource } from './cogSource';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
-import { isCapabilitiesUrl } from './wmts';
+import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './wmts';
+import { ensureCRS } from './crs';
 import { MeshRenderer } from './MeshRenderer';
 import { LineRenderer } from './LineRenderer';
 import { buildGraticule } from './graticule';
@@ -511,6 +512,102 @@ function scheduleOverviewUpdates(_state: ViewState): void {
 }
 
 // ---------------------------------------------------------------------------
+// WMTS layer picker
+// ---------------------------------------------------------------------------
+
+let pickerEl: HTMLElement;
+let pickerFilter: HTMLInputElement;
+let pickerLayer: HTMLSelectElement;
+let pickerTms: HTMLSelectElement;
+let pickerTimeRow: HTMLElement;
+let pickerTime: HTMLInputElement;
+let pickerTimeHint: HTMLElement;
+let pickerCount: HTMLElement;
+let pickerCaps: ParsedCapabilities | null = null;
+let pickerUrl = '';
+
+/**
+ * Load a capabilities document into the picker. Returns true if the picker
+ * was shown (the caller should not add a layer yet), false if the document
+ * has exactly one layer and no choices to make.
+ */
+async function openPicker(url: string): Promise<boolean> {
+  const caps = await fetchCapabilities(url);
+  const usable = caps.layers.filter(l => l.tmsIds.some(id => {
+    const t = caps.tms.get(id);
+    return t && ensureCRS(t.crs);
+  }));
+  if (usable.length === 0) throw new Error('No layer in this capabilities document uses a CRS we can transform');
+  const single = usable.length === 1 && usable[0].tmsIds.length <= 1 && usable[0].dimensions.length === 0;
+  if (single) return false;
+
+  pickerCaps = caps;
+  pickerUrl = url;
+  pickerFilter.value = '';
+  fillPickerLayers(usable);
+  pickerEl.hidden = false;
+  return true;
+}
+
+function fillPickerLayers(layers: WMTSLayerInfo[]): void {
+  const q = pickerFilter.value.trim().toLowerCase();
+  const shown = q ? layers.filter(l => (l.title + ' ' + l.id).toLowerCase().includes(q)) : layers;
+  pickerLayer.innerHTML = '';
+  for (const l of shown.slice(0, 500)) {
+    const opt = document.createElement('option');
+    opt.value = l.id;
+    opt.textContent = l.title === l.id ? l.id : `${l.title} [${l.id}]`;
+    pickerLayer.appendChild(opt);
+  }
+  pickerCount.textContent = `${shown.length} of ${layers.length} layers`;
+  onPickerLayerChange();
+}
+
+function pickerUsableLayers(): WMTSLayerInfo[] {
+  if (!pickerCaps) return [];
+  const caps = pickerCaps;
+  return caps.layers.filter(l => l.tmsIds.some(id => {
+    const t = caps.tms.get(id);
+    return t && ensureCRS(t.crs);
+  }));
+}
+
+function onPickerLayerChange(): void {
+  if (!pickerCaps) return;
+  const layer = pickerCaps.layers.find(l => l.id === pickerLayer.value);
+  pickerTms.innerHTML = '';
+  pickerTimeRow.hidden = true;
+  if (!layer) return;
+  for (const id of layer.tmsIds) {
+    const t = pickerCaps.tms.get(id);
+    if (!t || !ensureCRS(t.crs)) continue;
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = `${id} (${t.crs}, ${t.matrices.length} levels)`;
+    pickerTms.appendChild(opt);
+  }
+  const pref = Array.from(pickerTms.options).find(o => /google|webmercator|3857/i.test(o.value));
+  if (pref) pickerTms.value = pref.value;
+
+  const time = layer.dimensions.find(d => /^time$/i.test(d.id));
+  if (time) {
+    pickerTimeRow.hidden = false;
+    pickerTime.value = time.default || time.values[0] || '';
+    const v = time.values;
+    pickerTimeHint.textContent = v.length ? (v.length === 1 ? v[0] : `${v[0]} .. ${v[v.length - 1]}`) : '';
+    pickerTimeHint.title = v.slice(0, 20).join('\n');
+  }
+}
+
+function pickerSelectionUrl(): string {
+  const frag = new URLSearchParams();
+  frag.set('layer', pickerLayer.value);
+  if (pickerTms.value) frag.set('tms', pickerTms.value);
+  if (!pickerTimeRow.hidden && pickerTime.value.trim()) frag.set('time', pickerTime.value.trim());
+  return `${pickerUrl}#${frag.toString()}`;
+}
+
+// ---------------------------------------------------------------------------
 // Rendering and UI
 // ---------------------------------------------------------------------------
 
@@ -783,16 +880,39 @@ async function main() {
   syncUI();
 
   // Wire up UI
-  loadBtn.addEventListener('click', async () => {
-    const url = urlInput.value.trim();
+  async function loadOrAdd(url: string, replace: boolean): Promise<void> {
     if (!url) return;
+    if (isCapabilitiesUrl(url) && !splitCapabilitiesUrl(url).layer) {
+      try {
+        if (await openPicker(splitCapabilitiesUrl(url).url)) return;
+      } catch (err) {
+        alert(`Failed to read capabilities: ${err}`);
+        return;
+      }
+    }
+    if (replace) clearLayers();
+    await addLayer(url);
+  }
+  loadBtn.addEventListener('click', () => loadOrAdd(urlInput.value.trim(), true));
+  addBtn.addEventListener('click', () => loadOrAdd(urlInput.value.trim(), false));
+
+  // WMTS picker
+  pickerEl = document.getElementById('wmts-picker')!;
+  pickerFilter = document.getElementById('wmts-filter') as HTMLInputElement;
+  pickerLayer = document.getElementById('wmts-layer') as HTMLSelectElement;
+  pickerTms = document.getElementById('wmts-tms') as HTMLSelectElement;
+  pickerTimeRow = document.getElementById('wmts-time-row')!;
+  pickerTime = document.getElementById('wmts-time') as HTMLInputElement;
+  pickerTimeHint = document.getElementById('wmts-time-hint')!;
+  pickerCount = document.getElementById('wmts-count')!;
+  pickerFilter.addEventListener('input', () => fillPickerLayers(pickerUsableLayers()));
+  pickerLayer.addEventListener('change', onPickerLayerChange);
+  document.getElementById('wmts-load-btn')!.addEventListener('click', async () => {
     clearLayers();
-    await addLayer(url);
+    await addLayer(pickerSelectionUrl());
   });
-  addBtn.addEventListener('click', async () => {
-    const url = urlInput.value.trim();
-    if (!url) return;
-    await addLayer(url);
+  document.getElementById('wmts-add-btn')!.addEventListener('click', async () => {
+    await addLayer(pickerSelectionUrl());
   });
   urlInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') loadBtn.click();

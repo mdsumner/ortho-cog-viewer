@@ -111,6 +111,12 @@
         padding: 3px;
         max-width: 280px;
       }
+      #wmts-layer {
+        max-width: 200px;
+      }
+      #wmts-picker input.small {
+        width: 70px;
+      }
       #controls input.small {
         width: 60px;
       }
@@ -215,6 +221,28 @@
         <div class="control-row">
           <label>Tiles:</label>
           <select id="tile-preset"><option value="">presets...</option></select>
+        </div>
+        <div id="wmts-picker" hidden>
+          <div class="control-row">
+            <label>Layer:</label>
+            <input type="text" id="wmts-filter" class="small" placeholder="filter" />
+            <select id="wmts-layer"></select>
+          </div>
+          <div class="control-row">
+            <label>Matrix:</label>
+            <select id="wmts-tms"></select>
+          </div>
+          <div class="control-row" id="wmts-time-row" hidden>
+            <label>Time:</label>
+            <input type="text" id="wmts-time" class="crs" />
+            <span class="hint" id="wmts-time-hint"></span>
+          </div>
+          <div class="control-row">
+            <label></label>
+            <button id="wmts-load-btn">Load</button>
+            <button id="wmts-add-btn">Add</button>
+            <span class="hint" id="wmts-count"></span>
+          </div>
         </div>
         <div id="layers"></div>
       </fieldset>

@@ -15,7 +15,7 @@
 
 import { RasterSource, SourceLevel, TextureData, intersect } from './source';
 import { SourceBounds } from './uv';
-import { TileMatrix, TileMatrixSetDef, loadWMTS } from './wmts';
+import { TileMatrix, TileMatrixSetDef, loadWMTS, splitCapabilitiesUrl } from './wmts';
 
 const MERC = 20037508.342789244;
 
@@ -202,17 +202,11 @@ export class XYZSource implements RasterSource {
   static async fromCapabilities(
     url: string, wantLayer?: string, wantTms?: string, label?: string, attribution?: string
   ): Promise<XYZSource> {
-    const hash = url.indexOf('#');
-    let clean = url;
-    if (hash >= 0) {
-      const frag = new URLSearchParams(url.slice(hash + 1));
-      wantLayer = wantLayer || frag.get('layer') || undefined;
-      wantTms = wantTms || frag.get('tms') || undefined;
-      clean = url.slice(0, hash);
-    }
-    const w = await loadWMTS(clean, wantLayer, wantTms);
-    console.log(`WMTS layer ${w.layerId} on ${w.tms.id} (${w.tms.crs}, ${w.tms.matrices.length} levels)`);
-    return new XYZSource(w.template, w.tms, label || w.title, attribution || w.attribution, w.bounds);
+    const sel = splitCapabilitiesUrl(url);
+    const w = await loadWMTS(sel.url, wantLayer || sel.layer, wantTms || sel.tms, sel.time);
+    console.log(`WMTS layer ${w.layerId} on ${w.tms.id} (${w.tms.crs}, ${w.tms.matrices.length} levels)${sel.time ? ' time ' + sel.time : ''}`);
+    const lbl = (label || w.title) + (sel.time ? ` ${sel.time}` : '');
+    return new XYZSource(w.template, w.tms, lbl, attribution || w.attribution, w.bounds);
   }
 
   private tileUrl(m: TileMatrix, x: number, y: number): string {
