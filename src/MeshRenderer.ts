@@ -27,6 +27,14 @@ export class MeshRenderer {
   private uWrapU: WebGLUniformLocation | null = null;
   private wrapU = false;
 
+  // Wireframe overlay: same positions, drawn as lines with a flat colour
+  private lineProgram: WebGLProgram | null = null;
+  private lineVao: WebGLVertexArrayObject | null = null;
+  private lineIndexBuffer: WebGLBuffer | null = null;
+  private lineIndexCount: number = 0;
+  private uLineMatrix: WebGLUniformLocation | null = null;
+  private uLineColor: WebGLUniformLocation | null = null;
+
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.initShaders();
@@ -90,6 +98,32 @@ export class MeshRenderer {
     this.uMatrix = gl.getUniformLocation(program, 'u_matrix');
     this.uTexture = gl.getUniformLocation(program, 'u_texture');
     this.uWrapU = gl.getUniformLocation(program, 'u_wrapU');
+
+    // Wireframe program
+    const lvs = this.compileShader(gl.VERTEX_SHADER, `#version 300 es
+      in vec3 a_position;
+      uniform mat4 u_matrix;
+      void main() { gl_Position = u_matrix * vec4(a_position, 1.0); }
+    `);
+    const lfs = this.compileShader(gl.FRAGMENT_SHADER, `#version 300 es
+      precision highp float;
+      uniform vec4 u_color;
+      out vec4 fragColor;
+      void main() { fragColor = u_color; }
+    `);
+    if (lvs && lfs) {
+      const lp = gl.createProgram()!;
+      gl.attachShader(lp, lvs);
+      gl.attachShader(lp, lfs);
+      gl.linkProgram(lp);
+      if (gl.getProgramParameter(lp, gl.LINK_STATUS)) {
+        this.lineProgram = lp;
+        this.uLineMatrix = gl.getUniformLocation(lp, 'u_matrix');
+        this.uLineColor = gl.getUniformLocation(lp, 'u_color');
+      } else {
+        console.error('Wireframe program link error:', gl.getProgramInfoLog(lp));
+      }
+    }
   }
 
   /**
@@ -162,6 +196,66 @@ export class MeshRenderer {
     this.indexCount = mesh.indices.length;
 
     gl.bindVertexArray(null);
+
+    // Wireframe: three edges per triangle, sharing the position buffer
+    if (this.lineProgram) {
+      if (!this.lineVao) {
+        this.lineVao = gl.createVertexArray();
+        gl.bindVertexArray(this.lineVao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+        const loc = gl.getAttribLocation(this.lineProgram, 'a_position');
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        this.lineIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.lineIndexBuffer);
+      } else {
+        gl.bindVertexArray(this.lineVao);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.lineIndexBuffer);
+      }
+      const tri = mesh.indices;
+      const lines = new Uint32Array(tri.length * 2);
+      for (let t = 0, k = 0; t < tri.length; t += 3) {
+        const a = tri[t], b = tri[t + 1], c = tri[t + 2];
+        lines[k++] = a; lines[k++] = b;
+        lines[k++] = b; lines[k++] = c;
+        lines[k++] = c; lines[k++] = a;
+      }
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lines, gl.DYNAMIC_DRAW);
+      this.lineIndexCount = lines.length;
+      gl.bindVertexArray(null);
+    }
+  }
+
+  /**
+   * Draw the mesh edges with a flat colour, using the same view as
+   * renderWithViewport. Call after the textured pass.
+   */
+  renderWireframe(
+    centerX: number, centerY: number,
+    zoom: number,
+    color: [number, number, number, number] = [1, 1, 0, 0.5]
+  ): void {
+    const gl = this.gl;
+    if (!this.lineProgram || !this.lineVao || this.lineIndexCount === 0) return;
+
+    const canvas = gl.canvas as HTMLCanvasElement;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    const scale = Math.pow(2, zoom);
+    const halfWidth = canvas.clientWidth / scale / 2;
+    const halfHeight = canvas.clientHeight / scale / 2;
+    const matrix = this.createOrthoMatrix(
+      centerX - halfWidth, centerX + halfWidth,
+      centerY - halfHeight, centerY + halfHeight, -1, 1);
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(this.lineProgram);
+    gl.bindVertexArray(this.lineVao);
+    gl.uniformMatrix4fv(this.uLineMatrix, false, matrix);
+    gl.uniform4f(this.uLineColor, color[0], color[1], color[2], color[3]);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawElements(gl.LINES, this.lineIndexCount, gl.UNSIGNED_INT, 0);
+    gl.bindVertexArray(null);
   }
 
   /**
@@ -174,6 +268,11 @@ export class MeshRenderer {
     if (this.texBuffer) gl.deleteBuffer(this.texBuffer);
     if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
     if (this.texture) gl.deleteTexture(this.texture);
+    if (this.lineVao) gl.deleteVertexArray(this.lineVao);
+    if (this.lineIndexBuffer) gl.deleteBuffer(this.lineIndexBuffer);
+    this.lineVao = null;
+    this.lineIndexBuffer = null;
+    this.lineIndexCount = 0;
     this.vao = null;
     this.posBuffer = this.texBuffer = this.indexBuffer = null;
     this.texture = null;

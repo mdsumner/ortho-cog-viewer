@@ -57,7 +57,7 @@ This gives some nice properties for free:
 - azimuthal projections (ortho, laea, aeqd, stere, gnom) become a globe you can
   spin, with no special-casing of poles or the antimeridian
 - the cost is one proj4 round trip per mesh vertex per layer per frame, which
-  is about a thousand transforms for the default 32-wide grid
+  is a few thousand transforms for the default 64-wide grid
 
 Presets are in `centred.ts`. A custom template can be given with `{lon_0}` and
 `{lat_0}` placeholders, for example an oblique Mercator or a Cassini centred on
@@ -74,7 +74,8 @@ de-indexed mesh, u is unwrapped per triangle when the source spans 360
 degrees (with REPEAT wrapping in the sampler), and the few triangles whose
 span is still over half the texture, the ones containing a pole, are dropped.
 That leaves a hole about one mesh cell across at each pole; a finer grid
-shrinks it.
+shrinks it. Tick "show triangles" (or add `wire=1`) to see the mesh, the
+dropped pole triangles, and the rim where vertices fail the validity test.
 
 ### Validity mask
 
@@ -92,7 +93,8 @@ percentage of vertices that survived.
 | `mode`   | `fixed` or `centred`                                               |
 | `url`    | COG URL, repeatable for multiple layers                            |
 | `zoom`   | log2 of screen pixels per display unit                             |
-| `grid`   | mesh cells across (default 32)                                     |
+| `grid`   | mesh cells across (default 64)                                     |
+| `wire`   | `1` to draw the mesh triangles over the imagery                    |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
 | `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`) or a template |

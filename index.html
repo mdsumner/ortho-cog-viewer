@@ -114,6 +114,10 @@
       #controls input.small {
         width: 60px;
       }
+      #controls label.wide {
+        width: auto;
+        text-align: left;
+      }
       .hint {
         color: #aaa;
         font-size: 10px;
@@ -185,9 +189,14 @@
         </div>
         <div class="control-row">
           <label>Grid:</label>
-          <input type="number" id="grid-size" class="small" value="32" min="4" max="256" />
-          <span id="vertex-count">(1089 verts)</span>
+          <input type="number" id="grid-size" class="small" value="64" min="4" max="256" />
+          <span id="vertex-count">(4225 verts)</span>
           <button id="apply-crs-btn">Apply</button>
+        </div>
+        <div class="control-row">
+          <label></label>
+          <input type="checkbox" id="wireframe" />
+          <label for="wireframe" class="wide">show triangles</label>
         </div>
       </fieldset>
 

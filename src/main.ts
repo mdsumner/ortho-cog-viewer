@@ -35,7 +35,8 @@ const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/
 // ---------------------------------------------------------------------------
 
 let mode: Mode = 'centred';
-let gridSize = 32;
+let gridSize = 64;
+let showWireframe = false;
 
 // fixed mode
 let displayCRS = 'EPSG:3857';
@@ -87,6 +88,7 @@ let projTemplateInput: HTMLInputElement;
 let centreLonInput: HTMLInputElement;
 let centreLatInput: HTMLInputElement;
 let gridSizeInput: HTMLInputElement;
+let wireframeInput: HTMLInputElement;
 let vertexCountEl: HTMLElement;
 let infoEl: HTMLElement;
 let layersEl: HTMLElement;
@@ -470,6 +472,14 @@ function render(state: ViewState): void {
       canvas.clientHeight
     );
   }
+  if (showWireframe) {
+    const colors: [number, number, number, number][] = [
+      [1, 1, 0, 0.55], [0, 1, 1, 0.55], [1, 0.4, 1, 0.55], [0.5, 1, 0.5, 0.55]
+    ];
+    layers.forEach((layer, i) => {
+      layer.renderer.renderWireframe(state.centerX, state.centerY, state.zoom, colors[i % colors.length]);
+    });
+  }
   updateInfo(state);
 }
 
@@ -528,6 +538,7 @@ function syncUI(): void {
   fixedPanel.hidden = mode !== 'fixed';
   centredPanel.hidden = mode !== 'centred';
   gridSizeInput.value = String(gridSize);
+  wireframeInput.checked = showWireframe;
   displayCrsInput.value = displayCRS;
   extentInput.value = [meshExtent.minX, meshExtent.maxX, meshExtent.minY, meshExtent.maxY].join(',');
   if (isPresetName(centredProj)) {
@@ -552,6 +563,9 @@ function applyUrlParams(params: URLSearchParams): void {
 
   const g = parseInt(params.get('grid') || '');
   if (!isNaN(g) && g >= 4) gridSize = g;
+
+  const w = params.get('wire');
+  if (w !== null) showWireframe = w === '1' || w === 'true';
 
   const crs = params.get('crs');
   if (crs) displayCRS = crs;
@@ -602,7 +616,8 @@ function writeUrl(): void {
     p.set('center', `${state.centerX.toFixed(1)},${state.centerY.toFixed(1)}`);
   }
   p.set('zoom', state.zoom.toFixed(3));
-  if (gridSize !== 32) p.set('grid', String(gridSize));
+  if (gridSize !== 64) p.set('grid', String(gridSize));
+  if (showWireframe) p.set('wire', '1');
   for (const l of layers) p.append('url', l.url);
   history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
 }
@@ -624,6 +639,7 @@ async function main() {
   centreLonInput = document.getElementById('centre-lon') as HTMLInputElement;
   centreLatInput = document.getElementById('centre-lat') as HTMLInputElement;
   gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
+  wireframeInput = document.getElementById('wireframe') as HTMLInputElement;
   vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
   layersEl = document.getElementById('layers')!;
@@ -694,6 +710,11 @@ async function main() {
     if (e.key === 'Enter') loadBtn.click();
   });
   applyBtn.addEventListener('click', applyDisplaySettings);
+  wireframeInput.addEventListener('change', () => {
+    showWireframe = wireframeInput.checked;
+    render(viewController.getState());
+    scheduleUrlUpdate();
+  });
   modeSelect.addEventListener('change', () => {
     fixedPanel.hidden = modeSelect.value !== 'fixed';
     centredPanel.hidden = modeSelect.value !== 'centred';
