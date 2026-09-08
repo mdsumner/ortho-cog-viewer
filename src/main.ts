@@ -19,6 +19,7 @@ import { registerProjections } from './crs';
 import { RasterSource, planFetch, contains } from './source';
 import { COGSource } from './cogSource';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
+import { isCapabilitiesUrl } from './wmts';
 import { MeshRenderer } from './MeshRenderer';
 import { LineRenderer } from './LineRenderer';
 import { buildGraticule } from './graticule';
@@ -403,6 +404,7 @@ function fitLayer(layer: Layer): void {
 async function openSource(url: string): Promise<RasterSource> {
   if (url.startsWith('preset:')) return XYZSource.fromPreset(url.slice(7));
   if (isTileTemplate(url)) return XYZSource.fromTemplate(url);
+  if (isCapabilitiesUrl(url)) return XYZSource.fromCapabilities(url);
   return COGSource.open(url);
 }
 
@@ -557,6 +559,12 @@ function updateInfo(state: ViewState): void {
   infoEl.innerHTML = lines.join('<br>');
 }
 
+function formatUnits(v: number, unit: string): string {
+  if (!isFinite(v)) return '?';
+  if (unit === 'deg') return v >= 1 ? `${v.toFixed(2)} deg` : `${v.toFixed(4)} deg`;
+  return formatRes(v);
+}
+
 function formatRes(v: number): string {
   if (!isFinite(v)) return '?';
   if (v >= 1000) return `${(v / 1000).toFixed(1)} km`;
@@ -567,7 +575,9 @@ function formatRes(v: number): string {
 function updateUI(): void {
   layersEl.innerHTML = layers.map(layer => {
     const src = layer.source;
-    const lvl = layer.hasTexture ? `L${layer.texLevel} ${layer.texSize}` : '...';
+    const res = layer.hasTexture ? src.levels[layer.texLevel].resolution : NaN;
+    const unit = /4326|4269|longlat/.test(src.crs) ? 'deg' : 'm';
+    const lvl = layer.hasTexture ? `${formatUnits(res, unit)}/px ${layer.texSize}` : '...';
     const loading = layer.isLoading ? ' (loading)' : '';
     const pct = Math.round(layer.validFraction * 100);
     const attr = src.attribution ? `<div class="attribution">${src.attribution}</div>` : '';
