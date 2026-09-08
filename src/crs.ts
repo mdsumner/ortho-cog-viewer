@@ -26,6 +26,29 @@ export function registerProjections(): void {
 }
 
 /**
+ * Make sure a CRS is usable by proj4. Registered codes and proj strings pass
+ * through; UTM zones (EPSG:326xx north, 327xx south) are synthesised on the
+ * fly so any Sentinel-2 or Landsat tile loads without a hand-written def.
+ * Returns false if the CRS is still unknown.
+ */
+export function ensureCRS(crs: string): boolean {
+  const utm = /^EPSG:32([67])(\d{2})$/.exec(crs);
+  if (utm && !proj4.defs(crs)) {
+    const zone = parseInt(utm[2]);
+    if (zone >= 1 && zone <= 60) {
+      const south = utm[1] === '7' ? ' +south' : '';
+      proj4.defs(crs, `+proj=utm +zone=${zone}${south} +datum=WGS84 +units=m +no_defs`);
+    }
+  }
+  try {
+    proj4(crs, 'EPSG:4326');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Convert lon/lat bounds to Mercator.
  * Clamps latitude to avoid infinity at poles.
  */

@@ -7,21 +7,26 @@ CRS-agnostic Cloud Optimized GeoTIFF viewer with GPU-accelerated reprojection.
 ## Examples
 
 All state lives in the URL, so these are links to specific scenes. The default
-layer is the IBCSO v2 digital chart (EPSG:9354, polar stereographic).
+layer is NASA's Blue Marble (January, EPSG:4326, 5400x2700) and the default
+view is an orthographic globe centred over Australia.
+
+`S2` below is a Sentinel-2 true-colour COG over Tasmania (tile 55GEN, UTM 55S):
+`https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif`
 
 Centred projection mode (the projection centre follows the screen centre, drag to spin):
 
+- [Orthographic globe over Australia](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=135,-35)
 - [Orthographic globe over the South Pole](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=0,-90)
-- [Orthographic globe, oblique from Hobart](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147.3,-42.9)
-- [Lambert azimuthal equal area centred on Casey](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=110.5,-66.3&zoom=-12)
-- [Azimuthal equidistant from Hobart (great circles from the centre are straight)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=aeqd&center=147.3,-42.9&zoom=-14)
-- [Gnomonic over the Ross Sea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=gnom&center=180,-75&zoom=-12.5)
+- [Azimuthal equidistant from Hobart (great circles from the centre are straight, the antipode is the rim)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=aeqd&center=147.3,-42.9&zoom=-16)
+- [Lambert azimuthal equal area centred on Casey](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=110.5,-66.3&zoom=-13)
+- [Gnomonic over the Ross Sea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=gnom&center=180,-75&zoom=-13)
+- [S2 Tasmania tile on the globe, Blue Marble underneath](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
 
 Fixed extent mode (a static display CRS with a camera over it, the original design):
 
 - [Web Mercator](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3857)
-- [Antarctic Polar Stereographic, EPSG:3031](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3031&extent=-6000000,6000000,-6000000,6000000)
-- [Australian topo base map (EPSG:3577 source) in Web Mercator](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3857&extent=10000000,18000000,-6000000,0&url=https://projects.pawsey.org.au/image-cogs/images/Topographic_Base_Map.tif)
+- [Antarctic Polar Stereographic, EPSG:3031, whole world](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3031&extent=-12000000,12000000,-12000000,12000000)
+- [S2 Tasmania tile (UTM 55S source) in EPSG:3577 Australian Albers](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3577&extent=1000000,1500000,-4900000,-4500000&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
 
 ## The Core Idea
 
@@ -58,6 +63,18 @@ Presets are in `centred.ts`. A custom template can be given with `{lon_0}` and
 `{lat_0}` placeholders, for example an oblique Mercator or a Cassini centred on
 the view. Note that proj4js does not default `x_0`/`y_0` and silently returns
 NaN without them, so spell out `+x_0=0 +y_0=0`.
+
+### Seams and poles
+
+A global lon/lat source has two failure modes for UV interpolation: a
+triangle straddling the antimeridian (u ~ 0 on one side, u ~ 1 on the other,
+so the GPU sweeps the whole texture across it) and a triangle containing a
+pole (its vertices span every longitude). Each layer therefore gets its own
+de-indexed mesh, u is unwrapped per triangle when the source spans 360
+degrees (with REPEAT wrapping in the sampler), and the few triangles whose
+span is still over half the texture, the ones containing a pole, are dropped.
+That leaves a hole about one mesh cell across at each pole; a finer grid
+shrinks it.
 
 ### Validity mask
 
@@ -129,14 +146,16 @@ crs.ts            - proj4 definitions
 
 ## Test COGs
 
-- https://projects.pawsey.org.au/image-cogs/images/IBCSO_v2_digital_chart.tif (EPSG:9354)
-- https://projects.pawsey.org.au/image-cogs/images/Topographic_Base_Map.tif (EPSG:3577, GDA94 / Australian Albers)
+- NASA Blue Marble, January: https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif (EPSG:4326)
+- Sentinel-2 L2A true colour, Tasmania: the `S2` URL above (EPSG:32755)
+- IBCSO v2 digital chart, EPSG:9354: https://projects.pawsey.org.au/image-cogs/images/IBCSO_v2_digital_chart.tif (host does not currently serve to browsers)
 
 ## Next Steps
 
 - Photometric interpretation (grayscale min/max scaling, nodata, colour tables)
 - Per-tile loading rather than whole overviews, so full-resolution levels work
-- Register CRS definitions on the fly (source COGs with EPSG codes not in crs.ts fail)
+- Register more CRS definitions on the fly (UTM zones are synthesised; other EPSG codes still need a def in crs.ts)
+- Close the pole hole, probably by doing the inverse projection per fragment in the shader for those triangles
 - Tile server sources (WMTS/XYZ)
 - Graticule overlay, which would make the centred projections much easier to read
 

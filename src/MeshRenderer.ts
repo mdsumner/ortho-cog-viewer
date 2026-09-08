@@ -24,6 +24,8 @@ export class MeshRenderer {
   // Uniform locations
   private uMatrix: WebGLUniformLocation | null = null;
   private uTexture: WebGLUniformLocation | null = null;
+  private uWrapU: WebGLUniformLocation | null = null;
+  private wrapU = false;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -52,13 +54,17 @@ export class MeshRenderer {
 
       in vec2 v_texCoord;
       uniform sampler2D u_texture;
+      uniform bool u_wrapU;
 
       out vec4 fragColor;
 
       void main() {
-        // Discard fragments outside texture bounds
-        if (v_texCoord.x < 0.0 || v_texCoord.x > 1.0 ||
-            v_texCoord.y < 0.0 || v_texCoord.y > 1.0) {
+        // Discard fragments outside texture bounds. When the source is a
+        // full 360 degrees wide, u is periodic and the sampler REPEATs.
+        if (v_texCoord.y < 0.0 || v_texCoord.y > 1.0) {
+          discard;
+        }
+        if (!u_wrapU && (v_texCoord.x < 0.0 || v_texCoord.x > 1.0)) {
           discard;
         }
         fragColor = texture(u_texture, v_texCoord);
@@ -83,6 +89,22 @@ export class MeshRenderer {
     this.program = program;
     this.uMatrix = gl.getUniformLocation(program, 'u_matrix');
     this.uTexture = gl.getUniformLocation(program, 'u_texture');
+    this.uWrapU = gl.getUniformLocation(program, 'u_wrapU');
+  }
+
+  /**
+   * Treat the texture as periodic in S (a source spanning all longitudes).
+   */
+  setWrapU(wrap: boolean): void {
+    this.wrapU = wrap;
+    if (this.texture) this.applyWrap();
+  }
+
+  private applyWrap(): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, this.wrapU ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   private compileShader(type: number, source: string): WebGLShader | null {
@@ -168,8 +190,7 @@ export class MeshRenderer {
     // Use linear filtering for smooth interpolation
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.applyWrap();
   }
 
   updateTexture(image: HTMLImageElement | HTMLCanvasElement): void {
@@ -245,6 +266,7 @@ export class MeshRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uTexture, 0);
+    gl.uniform1i(this.uWrapU, this.wrapU ? 1 : 0);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -273,6 +295,7 @@ export class MeshRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uTexture, 0);
+    gl.uniform1i(this.uWrapU, this.wrapU ? 1 : 0);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

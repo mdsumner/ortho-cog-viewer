@@ -160,6 +160,104 @@ export function filterIndices(indices: Uint32Array, valid: Uint8Array): Uint32Ar
   return out.subarray(0, n);
 }
 
+export interface LayerGeometry {
+  positions: Float32Array;   // de-indexed: 3 vertices per triangle
+  texCoords: Float32Array;
+  indices: Uint32Array;      // 0..n-1, sequential
+  triangleCount: number;
+  validFraction: number;     // fraction of base-mesh vertices that were on-globe
+  seamDropped: number;       // triangles dropped because they contain a pole
+}
+
+/**
+ * Is this a geographic (lon/lat) CRS?
+ */
+export function isLongLat(crs: string): boolean {
+  try {
+    const def = proj4.defs(crs);
+    if (def && (def.projName === 'longlat' || def.projName === 'latlong')) return true;
+  } catch { /* fall through */ }
+  return /\+proj=longlat|\+proj=latlong|^EPSG:4326$|^EPSG:4269$/.test(crs);
+}
+
+/**
+ * Build a per-layer, de-indexed mesh with seam-safe texture coordinates.
+ *
+ * Two things go wrong when a shared-vertex mesh is textured with a global
+ * lon/lat image:
+ *
+ *   1. A triangle straddling the antimeridian has vertices at u ~ 0 and
+ *      u ~ 1, and the GPU interpolates across the whole texture width.
+ *   2. A triangle containing a pole has vertices at every longitude; no
+ *      unwrapping can fix it.
+ *
+ * So each triangle gets its own three vertices (3x the vertex count, which
+ * is still only a few thousand), u is unwrapped per triangle relative to its
+ * first vertex when the source is 360 degrees wide (the renderer then uses
+ * REPEAT wrapping in S), and any triangle whose u span is still more than
+ * half the texture is dropped: those are the pole triangles and they leave a
+ * hole one cell across instead of a smear to the horizon.
+ */
+export function buildLayerGeometry(
+  positions: Float32Array,
+  indices: Uint32Array,
+  displayCRS: string,
+  sourceCRS: string,
+  sourceBounds: SourceBounds,
+  tolerance: number,
+  wrapU: boolean
+): LayerGeometry {
+  const masked = computeTextureCoordsMasked(positions, displayCRS, sourceCRS, sourceBounds, tolerance);
+  const { texCoords: uv, valid } = masked;
+
+  const maxTris = indices.length / 3;
+  const outPos = new Float32Array(maxTris * 9);
+  const outUV = new Float32Array(maxTris * 6);
+  let n = 0;
+  let seamDropped = 0;
+
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t], b = indices[t + 1], c = indices[t + 2];
+    if (!(valid[a] && valid[b] && valid[c])) continue;
+
+    let ua = uv[a * 2], ub = uv[b * 2], uc = uv[c * 2];
+    if (wrapU) {
+      // Bring b and c to within half a texture of a.
+      ub -= Math.round(ub - ua);
+      uc -= Math.round(uc - ua);
+      const span = Math.max(ua, ub, uc) - Math.min(ua, ub, uc);
+      if (span > 0.5) {
+        seamDropped++;
+        continue;
+      }
+    }
+
+    const verts = [a, b, c];
+    const us = [ua, ub, uc];
+    for (let k = 0; k < 3; k++) {
+      const v = verts[k];
+      outPos[n * 9 + k * 3 + 0] = positions[v * 3 + 0];
+      outPos[n * 9 + k * 3 + 1] = positions[v * 3 + 1];
+      outPos[n * 9 + k * 3 + 2] = positions[v * 3 + 2];
+      outUV[n * 6 + k * 2 + 0] = us[k];
+      outUV[n * 6 + k * 2 + 1] = uv[v * 2 + 1];
+    }
+    n++;
+  }
+
+  const idx = new Uint32Array(n * 3);
+  for (let i = 0; i < idx.length; i++) idx[i] = i;
+
+  return {
+    positions: outPos.subarray(0, n * 9),
+    texCoords: outUV.subarray(0, n * 6),
+    indices: idx,
+    triangleCount: n,
+    validFraction: masked.validCount / (positions.length / 3),
+    seamDropped
+  };
+}
+
 /**
  * Transform bounds from one CRS to another.
  * Samples along edges AND interior to handle non-linear transforms

@@ -14,8 +14,8 @@
  */
 
 import { generateGridMesh, GridMesh } from './mesh';
-import { computeTextureCoordsMasked, filterIndices, transformBounds, SourceBounds } from './uv';
-import { registerProjections } from './crs';
+import { buildLayerGeometry, isLongLat, transformBounds, SourceBounds } from './uv';
+import { registerProjections, ensureCRS } from './crs';
 import { loadCOGMetadata, getOverviews, selectOverview, loadOverview, OverviewInfo } from './cog';
 import { MeshRenderer } from './MeshRenderer';
 import { ViewController, ViewState } from './ViewController';
@@ -28,13 +28,13 @@ type Mode = 'fixed' | 'centred';
 
 const DEFAULT_EXTENT = Math.PI * 6378137 * 2;  // ~40M meters
 const MAX_VERTICES = 66000;  // ~256x256 grid max
-const DEFAULT_COG = 'https://projects.pawsey.org.au/image-cogs/images/IBCSO_v2_digital_chart.tif';
+const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif';
 
 // ---------------------------------------------------------------------------
 // Display state
 // ---------------------------------------------------------------------------
 
-let mode: Mode = 'fixed';
+let mode: Mode = 'centred';
 let gridSize = 32;
 
 // fixed mode
@@ -48,8 +48,8 @@ let meshExtent = {
 
 // centred mode
 let centredProj = 'ortho';            // preset name or raw template
-let centreLon = 0;
-let centreLat = -90;
+let centreLon = 135;
+let centreLat = -35;
 let meshZoom = NaN;                   // zoom the current screen mesh was built for
 let meshCssW = 0;
 let meshCssH = 0;
@@ -65,6 +65,7 @@ interface Layer {
   renderer: MeshRenderer;
   isLoading: boolean;
   validFraction: number;
+  wrapU: boolean;
 }
 
 let layers: Layer[] = [];
@@ -158,19 +159,28 @@ function updateVertexCount(): void {
  */
 function updateLayerMesh(layer: Layer): void {
   const crs = currentDisplayCRS();
-  const masked = computeTextureCoordsMasked(
+  const geom = buildLayerGeometry(
     baseMesh.positions,
+    baseMesh.indices,
     crs,
     layer.sourceCRS,
     layer.sourceBounds,
-    meshCellSize() * 1e-2
+    meshCellSize() * 1e-2,
+    layer.wrapU
   );
-  layer.validFraction = masked.validCount / baseMesh.vertexCount;
+  layer.validFraction = geom.validFraction;
   layer.renderer.setMesh({
-    positions: baseMesh.positions,
-    texCoords: masked.texCoords,
-    indices: filterIndices(baseMesh.indices, masked.valid)
+    positions: geom.positions,
+    texCoords: geom.texCoords,
+    indices: geom.indices
   });
+}
+
+/**
+ * A source is periodic in u when it is geographic and spans all longitudes.
+ */
+function sourceWrapsU(crs: string, b: SourceBounds): boolean {
+  return isLongLat(crs) && (b.maxX - b.minX) >= 359.9;
 }
 
 function updateAllLayerMeshes(): void {
@@ -359,14 +369,14 @@ async function addLayer(url: string): Promise<Layer | null> {
     if (!metadata.crs) {
       throw new Error('COG has no CRS information');
     }
-    try {
-      proj4(metadata.crs, 'EPSG:4326');
-    } catch {
-      throw new Error(`Source CRS ${metadata.crs} is not registered in crs.ts (only a handful of EPSG codes are known)`);
+    if (!ensureCRS(metadata.crs)) {
+      throw new Error(`Source CRS ${metadata.crs} is not registered in crs.ts (UTM zones are synthesised; other EPSG codes need a def)`);
     }
 
     const overviews = await getOverviews(url, metadata.bounds);
     const renderer = new MeshRenderer(gl);
+    const wrapU = sourceWrapsU(metadata.crs, metadata.bounds);
+    renderer.setWrapU(wrapU);
 
     const layer: Layer = {
       id: nextLayerId++,
@@ -377,7 +387,8 @@ async function addLayer(url: string): Promise<Layer | null> {
       currentOverviewIndex: -1,
       renderer,
       isLoading: false,
-      validFraction: 0
+      validFraction: 0,
+      wrapU
     };
 
     updateLayerMesh(layer);
