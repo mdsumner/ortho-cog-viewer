@@ -48,13 +48,32 @@ export const SCHEMES: Record<string, (maxLevel?: number) => TileMatrixSetDef> = 
 
 export interface TilePreset {
   label: string;
-  template: string;      // {z}/{x}/{y} template, or a GetCapabilities URL
-  scheme?: string;       // key into SCHEMES (ignored for capabilities URLs)
+  template: string;      // {z}/{x}/{y} template, a GetCapabilities URL, or a COG URL (with styling fragment)
+  scheme?: string;       // key into SCHEMES (ignored for capabilities and COG URLs)
   maxLevel?: number;
   attribution: string;
+  cog?: boolean;
 }
 
 export const TILE_PRESETS: Record<string, TilePreset> = {
+  'gebco-2024': {
+    label: 'GEBCO 2024 bathymetry, hillshaded (COG, source.coop)',
+    template: 'https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif#cmap=bathy&curve=sqrt&shade=0.7&zf=8',
+    attribution: 'GEBCO Compilation Group (2024); COG by Alex Leith on source.coop',
+    cog: true
+  },
+  'gebco-2024-dirt': {
+    label: 'GEBCO 2024 with the DiRT palette (COG, source.coop)',
+    template: 'https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif#cmap=dirt&shade=0.6&zf=8',
+    attribution: 'GEBCO Compilation Group (2024); COG by Alex Leith on source.coop',
+    cog: true
+  },
+  'mur-sst-20260829': {
+    label: 'GHRSST MUR SST 2026-08-29, deg C (COG, source.coop)',
+    template: 'https://data.source.coop/ausantarctic/ghrsst-mur-v2/2026/08/29/20260829090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1_analysed_sst.tif#scale=0.001&offset=25&min=-2&max=32&cmap=turbo',
+    attribution: 'JPL MUR SST v4.1 (NASA PO.DAAC); COG by ausantarctic on source.coop',
+    cog: true
+  },
   osm: {
     label: 'OpenStreetMap',
     template: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',

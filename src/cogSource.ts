@@ -118,6 +118,8 @@ export interface CogUrlOptions {
   cmap?: string;
   curve?: string;
   nodata?: number;       // override
+  scale?: number;        // value = raw * scale + offset (defaults from GDAL metadata)
+  offset?: number;
   shade?: number;        // hillshade strength 0..1 (presence turns it on)
   zf?: number;           // vertical exaggeration
   az?: number;           // sun azimuth, degrees clockwise from north
@@ -144,6 +146,8 @@ export function splitCogUrl(url: string): CogUrlOptions {
     cmap: frag.get('cmap') || undefined,
     curve: frag.get('curve') || undefined,
     nodata: num('nodata'),
+    scale: num('scale'),
+    offset: num('offset'),
     shade: num('shade'),
     zf: num('zf'),
     az: num('az'),
@@ -171,6 +175,11 @@ export class COGSource implements RasterSource {
   band: number;
   /** 0-based bands for an rgb composite, or null for single band */
   rgbBands: [number, number, number] | null = null;
+  /** value = raw * scale + offset, from GDAL metadata unless overridden */
+  scale = 1;
+  offset = 0;
+  readonly fileScale: number;
+  readonly fileOffset: number;
 
   private constructor(
     private url: string,
@@ -182,8 +191,14 @@ export class COGSource implements RasterSource {
     fmt: number,
     nodata: number | null,
     band: number,
-    forceRgb: boolean
+    forceRgb: boolean,
+    fileScale = 1,
+    fileOffset = 0
   ) {
+    this.fileScale = fileScale;
+    this.fileOffset = fileOffset;
+    this.scale = fileScale;
+    this.offset = fileOffset;
     this.label = url.split('/').pop() || url;
     this.crs = crs;
     this.bounds = bounds;
@@ -229,7 +244,20 @@ export class COGSource implements RasterSource {
     const nd = image.getGDALNoData();
     const nodata = nd === null || nd === undefined || !isFinite(nd) ? null : nd;
     const band = Math.max(0, Math.min(spp - 1, (opts.band || 1) - 1));
-    const src = new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb);
+    // GDAL scale/offset (per band, or dataset level)
+    let fScale = 1, fOffset = 0;
+    try {
+      const md = image.getGDALMetadata(band) || image.getGDALMetadata();
+      if (md) {
+        const sc = parseFloat(md.SCALE ?? md.scale ?? md.scale_factor);
+        const of = parseFloat(md.OFFSET ?? md.offset ?? md.add_offset);
+        if (isFinite(sc) && sc !== 0) fScale = sc;
+        if (isFinite(of)) fOffset = of;
+      }
+    } catch { /* no metadata */ }
+    const src = new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb, fScale, fOffset);
+    if (opts.scale !== undefined) src.scale = opts.scale;
+    if (opts.offset !== undefined) src.offset = opts.offset;
     if (opts.bands && spp >= 3) {
       src.rgbBands = opts.bands.map(b => Math.max(0, Math.min(spp - 1, b - 1))) as [number, number, number];
     }
@@ -285,10 +313,21 @@ export class COGSource implements RasterSource {
       console.log(`COG fetch level ${level} bands ${samples.map(b => b + 1).join(',')} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
       const rasters = await image.readRasters(opts as any);
       const raw = rasters as unknown as ArrayLike<number>;
-      const data = raw instanceof Float32Array ? raw : Float32Array.from(raw as ArrayLike<number>);
-      const stats = floatStats(data, this.nodata);
+      const data = raw instanceof Float32Array && this.scale === 1 && this.offset === 0
+        ? raw : Float32Array.from(raw as ArrayLike<number>);
+      // Apply scale/offset; nodata is compared on the raw value and becomes NaN
+      let nodataOut: number | null = this.nodata;
+      if (this.scale !== 1 || this.offset !== 0) {
+        const nd = this.nodata;
+        for (let i = 0; i < data.length; i++) {
+          const v = data[i];
+          data[i] = (nd !== null && v === nd) ? NaN : v * this.scale + this.offset;
+        }
+        nodataOut = null;
+      }
+      const stats = floatStats(data, nodataOut);
       const channels = this.rgbBands ? 3 : 1;
-      return { float: { data, width: outW, height: outH, channels, nodata: this.nodata, stats }, bounds };
+      return { float: { data, width: outW, height: outH, channels, nodata: nodataOut, stats }, bounds };
     }
 
     console.log(`COG fetch level ${level} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);

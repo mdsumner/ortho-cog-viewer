@@ -436,7 +436,11 @@ function fitLayer(layer: Layer): void {
 // ---------------------------------------------------------------------------
 
 async function openSource(url: string): Promise<RasterSource> {
-  if (url.startsWith('preset:')) return XYZSource.fromPreset(url.slice(7));
+  if (url.startsWith('preset:')) {
+    const p = TILE_PRESETS[url.slice(7)];
+    if (p && p.cog) return COGSource.open(p.template);
+    return XYZSource.fromPreset(url.slice(7));
+  }
   if (isTileTemplate(url)) return XYZSource.fromTemplate(url);
   if (isCapabilitiesUrl(url)) return XYZSource.fromCapabilities(url);
   return COGSource.open(url);
@@ -819,6 +823,7 @@ function updateUI(): void {
         <label class="wide">nodata</label>
         <input type="text" class="num" data-nodata="${layer.id}" value="${ndValue}" placeholder="none" title="nodata value; blank = none" />
         <button data-nodata-auto="${layer.id}" title="use the file's nodata tag"${sc.nodataAuto ? ' disabled' : ''}>auto</button>
+        <button data-reset="${layer.id}" title="back to the styling this layer was loaded with">reset</button>
       </div>
       ${sc.mode === 'rgb' ? '' : `<div class="scale-row" data-layer="${layer.id}">
         <input type="checkbox" data-shade="${layer.id}"${sc.shade ? ' checked' : ''} />
@@ -971,6 +976,45 @@ function applyScale(layer: Layer, partial: Partial<ScaleState> & { minmax?: bool
   layer.renderer.setNodata(nd);
   render(viewController.getState());
   if (updateUrl) scheduleUrlUpdate();
+}
+
+/**
+ * Restore the styling a layer was loaded with (its URL fragment, or the
+ * defaults). Bands and mode are restored too, which refetches if they differ.
+ */
+async function resetScale(layer: Layer): Promise<void> {
+  if (!layer.scale) return;
+  const o = splitCogUrl(layer.url);
+  const cog = layer.source as COGSource;
+  const cmap = o.cmap && isColormapName(o.cmap) ? o.cmap : 'viridis';
+  const pinned = colormapRange(cmap);
+  const explicit = o.min !== undefined && o.max !== undefined;
+  const wantMode: 'single' | 'rgb' = o.bands && cog.samplesPerPixel >= 3 ? 'rgb' : 'single';
+  const wantBands = wantMode === 'rgb' ? o.bands!.map(b => b - 1) : [Math.max(0, (o.band || 1) - 1)];
+  layer.opacity = (() => { const a = parseFloat(fragmentParams(layer.url).get('alpha') || ''); return isFinite(a) ? a : 1; })();
+  layer.renderer.setOpacity(layer.opacity);
+  Object.assign(layer.scale, {
+    min: pinned ? pinned[0] : (o.min ?? 0),
+    max: pinned ? pinned[1] : (o.max ?? 1),
+    cmap,
+    curve: o.curve === 'sqrt' || o.curve === 'log' ? o.curve : 'linear',
+    auto: !explicit && !pinned,
+    nodata: o.nodata ?? null,
+    nodataAuto: o.nodata === undefined,
+    shade: o.shade !== undefined,
+    shadeStrength: o.shade ?? 0.6,
+    zfactor: o.zf ?? 1,
+    azimuth: o.az ?? 315,
+    altitude: o.alt ?? 45
+  });
+  const bandsDiffer = wantMode !== layer.scale.mode ||
+    (wantMode === 'rgb' ? !cog.rgbBands || wantBands.some((b, i) => b !== cog.rgbBands![i]) : cog.band !== wantBands[0]);
+  if (bandsDiffer) {
+    await changeBands(layer, wantMode, wantBands);
+  } else {
+    applyScale(layer, {});
+    updateUI();
+  }
 }
 
 /**
@@ -1297,6 +1341,12 @@ async function main() {
     const auto = t.getAttribute('data-auto');
     const minmax = t.getAttribute('data-minmax');
     const ndAuto = t.getAttribute('data-nodata-auto');
+    const reset = t.getAttribute('data-reset');
+    if (reset !== null) {
+      const layer = layers.find(l => l.id === parseInt(reset));
+      if (layer) resetScale(layer);
+      return;
+    }
     if (rm !== null) removeLayer(parseInt(rm));
     if (fit !== null) {
       const layer = layers.find(l => l.id === parseInt(fit));
