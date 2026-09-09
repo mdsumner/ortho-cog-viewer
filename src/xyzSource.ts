@@ -147,6 +147,7 @@ export class XYZSource implements RasterSource {
   readonly levels: SourceLevel[];
   readonly wrapU: boolean;
   readonly attribution?: string;
+  readonly numeric = false;
 
   constructor(
     private template: string,

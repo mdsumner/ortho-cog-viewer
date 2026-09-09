@@ -18,9 +18,20 @@ export interface SourceLevel {
   height: number;
 }
 
+export interface FloatStats {
+  min: number;
+  max: number;
+  p2: number;     // 2nd percentile
+  p98: number;    // 98th percentile
+  count: number;  // valid samples
+}
+
 export interface TextureData {
-  canvas: HTMLCanvasElement;
-  bounds: SourceBounds;  // extent of the canvas in source CRS units
+  /** RGBA image, for picture-like sources */
+  canvas?: HTMLCanvasElement;
+  /** single-band numeric data, for colour mapping on the GPU */
+  float?: { data: Float32Array; width: number; height: number; nodata: number | null; stats: FloatStats };
+  bounds: SourceBounds;  // extent of the texture in source CRS units
 }
 
 export interface RasterSource {
@@ -33,6 +44,8 @@ export interface RasterSource {
   /** True when the x axis is periodic (a source spanning all longitudes). */
   readonly wrapU: boolean;
   readonly attribution?: string;
+  /** true when fetch() returns float data rather than a canvas */
+  readonly numeric: boolean;
   /**
    * Fetch a texture covering at least `region` at `level`. The returned
    * bounds may be larger than asked (snapped to tiles) and the canvas is

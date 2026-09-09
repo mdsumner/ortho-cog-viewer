@@ -5,7 +5,7 @@
  */
 
 import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
-import { RasterSource, SourceLevel, TextureData } from './source';
+import { RasterSource, SourceLevel, TextureData, FloatStats } from './source';
 import { SourceBounds } from './uv';
 import { ensureCRS } from './crs';
 
@@ -69,6 +69,64 @@ function toCanvas(data: ArrayLike<number>, width: number, height: number, spp: n
   return c;
 }
 
+/**
+ * Percentiles and range of the valid values in a float window, from a
+ * histogram over a bounded sample so huge windows stay cheap.
+ */
+function floatStats(data: Float32Array, nodata: number | null): FloatStats {
+  const n = data.length;
+  const step = Math.max(1, Math.floor(n / 500000));
+  let min = Infinity, max = -Infinity, count = 0;
+  for (let i = 0; i < n; i += step) {
+    const v = data[i];
+    if (v !== v || (nodata !== null && v === nodata)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    count++;
+  }
+  if (count === 0) return { min: 0, max: 1, p2: 0, p98: 1, count: 0 };
+  if (max === min) return { min, max, p2: min, p98: max, count };
+  const bins = 1024;
+  const hist = new Uint32Array(bins);
+  const scale = (bins - 1) / (max - min);
+  for (let i = 0; i < n; i += step) {
+    const v = data[i];
+    if (v !== v || (nodata !== null && v === nodata)) continue;
+    hist[Math.floor((v - min) * scale)]++;
+  }
+  const pct = (q: number): number => {
+    const target = q * count;
+    let acc = 0;
+    for (let b = 0; b < bins; b++) {
+      acc += hist[b];
+      if (acc >= target) return min + b / scale;
+    }
+    return max;
+  };
+  return { min, max, p2: pct(0.02), p98: pct(0.98), count };
+}
+
+/**
+ * Split "cog.tif#band=2&min=..&max=..&cmap=.." into the URL and its options.
+ */
+export function splitCogUrl(url: string): { url: string; band?: number; min?: number; max?: number; cmap?: string; rgb?: boolean } {
+  const hash = url.indexOf('#');
+  if (hash < 0) return { url };
+  const frag = new URLSearchParams(url.slice(hash + 1));
+  const num = (k: string) => {
+    const v = frag.get(k);
+    return v !== null && isFinite(parseFloat(v)) ? parseFloat(v) : undefined;
+  };
+  return {
+    url: url.slice(0, hash),
+    band: num('band'),
+    min: num('min'),
+    max: num('max'),
+    cmap: frag.get('cmap') || undefined,
+    rgb: frag.get('rgb') === '1' || undefined
+  };
+}
+
 export class COGSource implements RasterSource {
   readonly kind = 'cog' as const;
   readonly label: string;
@@ -77,24 +135,43 @@ export class COGSource implements RasterSource {
   readonly levels: SourceLevel[];
   readonly wrapU: boolean;
   readonly samplesPerPixel: number;
+  readonly bitsPerSample: number;
+  readonly sampleFormat: number;      // 1 uint, 2 int, 3 float
+  readonly nodata: number | null;
+  readonly numeric: boolean;
+  /** 0-based band read in numeric mode */
+  readonly band: number;
 
   private constructor(
     private url: string,
     crs: string,
     bounds: SourceBounds,
     levels: SourceLevel[],
-    spp: number
+    spp: number,
+    bits: number,
+    fmt: number,
+    nodata: number | null,
+    band: number,
+    forceRgb: boolean
   ) {
     this.label = url.split('/').pop() || url;
     this.crs = crs;
     this.bounds = bounds;
     this.levels = levels;
     this.samplesPerPixel = spp;
+    this.bitsPerSample = bits;
+    this.sampleFormat = fmt;
+    this.nodata = nodata;
+    this.band = band;
+    // Pictures are 8-bit with 3+ bands; everything else is data.
+    this.numeric = !forceRgb && (spp < 3 || bits > 8 || fmt === 3);
     const geographic = /^EPSG:4326$|^EPSG:4269$|\+proj=longlat/.test(crs);
     this.wrapU = geographic && (bounds.maxX - bounds.minX) >= 359.9;
   }
 
-  static async open(url: string): Promise<COGSource> {
+  static async open(rawUrl: string): Promise<COGSource> {
+    const opts = splitCogUrl(rawUrl);
+    const url = opts.url;
     const tiff = await getTiff(url);
     const image = await tiff.getImage();
     const crs = parseCRSFromGeoKeys(image.getGeoKeys());
@@ -113,7 +190,14 @@ export class COGSource implements RasterSource {
       levels.push({ index: i, resolution: (bounds.maxX - bounds.minX) / w, width: w, height: h });
     }
     levels.sort((a, b) => a.resolution - b.resolution);
-    return new COGSource(url, crs, bounds, levels, image.getSamplesPerPixel());
+
+    const spp = image.getSamplesPerPixel();
+    const bits = image.getBitsPerSample()[0] || 8;
+    const fmt = (image.getSampleFormat && image.getSampleFormat()) || 1;
+    const nd = image.getGDALNoData();
+    const nodata = nd === null || nd === undefined || !isFinite(nd) ? null : nd;
+    const band = Math.max(0, Math.min(spp - 1, (opts.band || 1) - 1));
+    return new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb);
   }
 
   async fetch(level: number, region: SourceBounds, maxDim: number): Promise<TextureData> {
@@ -151,19 +235,27 @@ export class COGSource implements RasterSource {
       opts.height = outH;
       opts.resampleMethod = 'nearest';
     }
+    const bounds = {
+      minX: minX + x0 * resX,
+      maxX: minX + x1 * resX,
+      maxY: maxY - y0 * resY,
+      minY: maxY - y1 * resY
+    };
+
+    if (this.numeric) {
+      opts.samples = [this.band];
+      console.log(`COG fetch level ${level} band ${this.band + 1} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
+      const rasters = await image.readRasters(opts as any);
+      const raw = rasters as unknown as ArrayLike<number>;
+      const data = raw instanceof Float32Array ? raw : Float32Array.from(raw as ArrayLike<number>);
+      const stats = floatStats(data, this.nodata);
+      return { float: { data, width: outW, height: outH, nodata: this.nodata, stats }, bounds };
+    }
+
     console.log(`COG fetch level ${level} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
     const rasters = await image.readRasters(opts as any);
     const data = rasters as unknown as ArrayLike<number>;
     const canvas = toCanvas(data, outW, outH, image.getSamplesPerPixel());
-
-    return {
-      canvas,
-      bounds: {
-        minX: minX + x0 * resX,
-        maxX: minX + x1 * resX,
-        maxY: maxY - y0 * resY,
-        minY: maxY - y1 * resY
-      }
-    };
+    return { canvas, bounds };
   }
 }

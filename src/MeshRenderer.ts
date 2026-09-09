@@ -27,6 +27,20 @@ export class MeshRenderer {
   private uWrapU: WebGLUniformLocation | null = null;
   private wrapU = false;
 
+  // Numeric (single band float) mode
+  private uCmap: WebGLUniformLocation | null = null;
+  private uNumeric: WebGLUniformLocation | null = null;
+  private uRange: WebGLUniformLocation | null = null;
+  private uNodata: WebGLUniformLocation | null = null;
+  private uHasNodata: WebGLUniformLocation | null = null;
+  private uOpacity: WebGLUniformLocation | null = null;
+  private numeric = false;
+  private range: [number, number] = [0, 1];
+  private nodata: number | null = null;
+  private opacity = 1;
+  private cmapTexture: WebGLTexture | null = null;
+  private floatLinear: boolean;
+
   // Wireframe overlay: same positions, drawn as lines with a flat colour
   private lineProgram: WebGLProgram | null = null;
   private lineVao: WebGLVertexArrayObject | null = null;
@@ -37,6 +51,7 @@ export class MeshRenderer {
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
+    this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
     this.initShaders();
   }
 
@@ -62,7 +77,13 @@ export class MeshRenderer {
 
       in vec2 v_texCoord;
       uniform sampler2D u_texture;
+      uniform sampler2D u_cmap;
       uniform bool u_wrapU;
+      uniform bool u_numeric;
+      uniform vec2 u_range;      // min, max
+      uniform float u_nodata;
+      uniform bool u_hasNodata;
+      uniform float u_opacity;
 
       out vec4 fragColor;
 
@@ -75,7 +96,16 @@ export class MeshRenderer {
         if (!u_wrapU && (v_texCoord.x < 0.0 || v_texCoord.x > 1.0)) {
           discard;
         }
-        fragColor = texture(u_texture, v_texCoord);
+        if (u_numeric) {
+          float v = texture(u_texture, v_texCoord).r;
+          if (isnan(v) || isinf(v)) discard;
+          if (u_hasNodata && abs(v - u_nodata) <= 1e-6 * max(1.0, abs(u_nodata))) discard;
+          float t = clamp((v - u_range.x) / (u_range.y - u_range.x), 0.0, 1.0);
+          fragColor = vec4(texture(u_cmap, vec2(t, 0.5)).rgb, u_opacity);
+        } else {
+          vec4 c = texture(u_texture, v_texCoord);
+          fragColor = vec4(c.rgb, c.a * u_opacity);
+        }
       }
     `;
 
@@ -98,6 +128,12 @@ export class MeshRenderer {
     this.uMatrix = gl.getUniformLocation(program, 'u_matrix');
     this.uTexture = gl.getUniformLocation(program, 'u_texture');
     this.uWrapU = gl.getUniformLocation(program, 'u_wrapU');
+    this.uCmap = gl.getUniformLocation(program, 'u_cmap');
+    this.uNumeric = gl.getUniformLocation(program, 'u_numeric');
+    this.uRange = gl.getUniformLocation(program, 'u_range');
+    this.uNodata = gl.getUniformLocation(program, 'u_nodata');
+    this.uHasNodata = gl.getUniformLocation(program, 'u_hasNodata');
+    this.uOpacity = gl.getUniformLocation(program, 'u_opacity');
 
     // Wireframe program
     const lvs = this.compileShader(gl.VERTEX_SHADER, `#version 300 es
@@ -268,6 +304,8 @@ export class MeshRenderer {
     if (this.texBuffer) gl.deleteBuffer(this.texBuffer);
     if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
     if (this.texture) gl.deleteTexture(this.texture);
+    if (this.cmapTexture) gl.deleteTexture(this.cmapTexture);
+    this.cmapTexture = null;
     if (this.lineVao) gl.deleteVertexArray(this.lineVao);
     if (this.lineIndexBuffer) gl.deleteBuffer(this.lineIndexBuffer);
     this.lineVao = null;
@@ -292,9 +330,49 @@ export class MeshRenderer {
     this.applyWrap();
   }
 
+  /**
+   * Upload single-band float data as an R32F texture. Values are colour
+   * mapped in the shader with setRange / setColormap, so changing the range
+   * never touches the data.
+   */
+  updateFloatTexture(data: Float32Array, width: number, height: number, nodata: number | null): void {
+    const gl = this.gl;
+    if (!this.texture) this.texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, data);
+    const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    this.applyWrap();
+    this.numeric = true;
+    this.nodata = nodata;
+    if (!this.cmapTexture) this.setColormap(new Uint8Array(256 * 4).fill(255));
+  }
+
+  setColormap(rgba256: Uint8Array): void {
+    const gl = this.gl;
+    if (!this.cmapTexture) this.cmapTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.cmapTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba256);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  setRange(min: number, max: number): void {
+    this.range = [min, max === min ? min + 1e-6 : max];
+  }
+
+  setOpacity(o: number): void {
+    this.opacity = Math.max(0, Math.min(1, o));
+  }
+
   updateTexture(image: HTMLImageElement | HTMLCanvasElement): void {
     const gl = this.gl;
-    
+    this.numeric = false;
+
     if (!this.texture) {
       this.setTexture(image);
       return;
@@ -302,6 +380,8 @@ export class MeshRenderer {
 
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
   private createOrthoMatrix(
@@ -366,6 +446,15 @@ export class MeshRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uTexture, 0);
     gl.uniform1i(this.uWrapU, this.wrapU ? 1 : 0);
+    gl.uniform1i(this.uNumeric, this.numeric ? 1 : 0);
+    gl.uniform2f(this.uRange, this.range[0], this.range[1]);
+    gl.uniform1f(this.uNodata, this.nodata === null ? 0 : this.nodata);
+    gl.uniform1i(this.uHasNodata, this.nodata === null ? 0 : 1);
+    gl.uniform1f(this.uOpacity, this.opacity);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.cmapTexture);
+    gl.uniform1i(this.uCmap, 1);
+    gl.activeTexture(gl.TEXTURE0);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -395,6 +484,15 @@ export class MeshRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uTexture, 0);
     gl.uniform1i(this.uWrapU, this.wrapU ? 1 : 0);
+    gl.uniform1i(this.uNumeric, this.numeric ? 1 : 0);
+    gl.uniform2f(this.uRange, this.range[0], this.range[1]);
+    gl.uniform1f(this.uNodata, this.nodata === null ? 0 : this.nodata);
+    gl.uniform1i(this.uHasNodata, this.nodata === null ? 0 : 1);
+    gl.uniform1f(this.uOpacity, this.opacity);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.cmapTexture);
+    gl.uniform1i(this.uCmap, 1);
+    gl.activeTexture(gl.TEXTURE0);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

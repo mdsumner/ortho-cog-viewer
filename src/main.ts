@@ -17,7 +17,9 @@ import { generateGridMesh, GridMesh } from './mesh';
 import { buildLayerGeometry, transformBounds, SourceBounds } from './uv';
 import { registerProjections } from './crs';
 import { RasterSource, planFetch, contains } from './source';
-import { COGSource } from './cogSource';
+import { COGSource, splitCogUrl } from './cogSource';
+import { COLORMAPS, colormapBytes, colormapCss, isColormapName } from './colormap';
+import { FloatStats } from './source';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './wmts';
 import { ensureCRS } from './crs';
@@ -82,6 +84,9 @@ interface Layer {
   /** what the last mesh build said the view needs */
   needBBox: SourceBounds | null;
   needPx: { w: number; h: number } | null;
+  /** numeric layers: colour scaling state */
+  scale: { min: number; max: number; cmap: string; auto: boolean } | null;
+  stats: FloatStats | null;
 }
 
 const MAX_TEXTURE_DIM = 4096;
@@ -429,8 +434,18 @@ async function addLayer(url: string): Promise<Layer | null> {
       pending: null,
       validFraction: 0,
       needBBox: null,
-      needPx: null
+      needPx: null,
+      scale: null,
+      stats: null
     };
+    if (source.numeric) {
+      const o = splitCogUrl(url);
+      const cmap = o.cmap && isColormapName(o.cmap) ? o.cmap : 'viridis';
+      const explicit = o.min !== undefined && o.max !== undefined;
+      layer.scale = { min: o.min ?? 0, max: o.max ?? 1, cmap, auto: !explicit };
+      renderer.setColormap(colormapBytes(cmap));
+      renderer.setRange(layer.scale.min, layer.scale.max);
+    }
 
     updateLayerMesh(layer);
     layers.push(layer);
@@ -486,9 +501,21 @@ async function updateLayerTexture(layer: Layer): Promise<void> {
     if (seq !== layer.fetchSeq) return;  // superseded
     layer.texBounds = data.bounds;
     layer.texLevel = plan.level.index;
-    layer.texSize = `${data.canvas.width}x${data.canvas.height}`;
+    if (data.float) {
+      const f = data.float;
+      layer.texSize = `${f.width}x${f.height}`;
+      layer.stats = f.stats;
+      layer.renderer.updateFloatTexture(f.data, f.width, f.height, f.nodata);
+      if (layer.scale && layer.scale.auto && f.stats.count > 0) {
+        layer.scale.min = f.stats.p2;
+        layer.scale.max = f.stats.p98;
+        layer.renderer.setRange(layer.scale.min, layer.scale.max);
+      }
+    } else if (data.canvas) {
+      layer.texSize = `${data.canvas.width}x${data.canvas.height}`;
+      layer.renderer.updateTexture(data.canvas);
+    }
     layer.hasTexture = true;
-    layer.renderer.updateTexture(data.canvas);
     updateLayerMesh(layer);   // UVs are relative to the new texture bounds
     render(viewController.getState());
   } catch (err) {
@@ -678,15 +705,77 @@ function updateUI(): void {
     const loading = layer.isLoading ? ' (loading)' : '';
     const pct = Math.round(layer.validFraction * 100);
     const attr = src.attribution ? `<div class="attribution">${src.attribution}</div>` : '';
+    let scaleRow = '';
+    if (layer.scale) {
+      const sc = layer.scale;
+      const cog = src as COGSource;
+      const st = layer.stats;
+      const opts = Object.entries(COLORMAPS).map(([k, v]) =>
+        `<option value="${k}"${k === sc.cmap ? ' selected' : ''}>${v.label}</option>`).join('');
+      const bandInfo = cog.samplesPerPixel > 1 ? ` band ${cog.band + 1}/${cog.samplesPerPixel}` : '';
+      const statInfo = st && st.count ? ` data ${fmtNum(st.min)}..${fmtNum(st.max)}` : '';
+      scaleRow = `
+      <div class="scale-row" data-layer="${layer.id}">
+        <span class="legend" style="background:${colormapCss(sc.cmap)}"></span>
+        <input type="text" class="num" data-min="${layer.id}" value="${fmtNum(sc.min)}" title="min" />
+        <input type="text" class="num" data-max="${layer.id}" value="${fmtNum(sc.max)}" title="max" />
+        <select data-cmap="${layer.id}">${opts}</select>
+        <button data-auto="${layer.id}" title="2-98 percentile of the current window">auto</button>
+        <span class="hint">${bandInfo}${statInfo}${cog.nodata !== null ? ` nodata ${cog.nodata}` : ''}</span>
+      </div>`;
+    }
     return `
       <div class="layer-item">
         <button data-remove="${layer.id}" title="Remove layer">x</button>
         <button data-fit="${layer.id}" title="Centre the view on this layer">fit</button>
         <span title="${layer.url}">${src.label}</span>
         <span>(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)</span>
-      </div>${attr}
+      </div>${scaleRow}${attr}
     `;
   }).join('');
+}
+
+function fmtNum(v: number): string {
+  if (!isFinite(v)) return '?';
+  const a = Math.abs(v);
+  if (a === 0) return '0';
+  if (a >= 1e6 || a < 1e-3) return v.toExponential(3);
+  if (a >= 100) return v.toFixed(1);
+  return v.toPrecision(4).replace(/\.?0+$/, '');
+}
+
+/**
+ * Apply an edited min/max/colormap to a numeric layer: uniforms only, no refetch.
+ */
+function applyScale(layer: Layer, partial: Partial<{ min: number; max: number; cmap: string; auto: boolean }>): void {
+  if (!layer.scale) return;
+  Object.assign(layer.scale, partial);
+  if (partial.auto && layer.stats && layer.stats.count) {
+    layer.scale.min = layer.stats.p2;
+    layer.scale.max = layer.stats.p98;
+  }
+  layer.renderer.setRange(layer.scale.min, layer.scale.max);
+  layer.renderer.setColormap(colormapBytes(layer.scale.cmap));
+  render(viewController.getState());
+  scheduleUrlUpdate();
+}
+
+/**
+ * The layer URL with its current scaling encoded in the fragment.
+ */
+function layerUrlWithState(layer: Layer): string {
+  if (!layer.scale) return layer.url;
+  const base = splitCogUrl(layer.url);
+  const frag = new URLSearchParams();
+  const cog = layer.source as COGSource;
+  if (cog.samplesPerPixel > 1) frag.set('band', String(cog.band + 1));
+  if (!layer.scale.auto) {
+    frag.set('min', String(layer.scale.min));
+    frag.set('max', String(layer.scale.max));
+  }
+  if (layer.scale.cmap !== 'viridis') frag.set('cmap', layer.scale.cmap);
+  const q = frag.toString();
+  return q ? `${base.url}#${q}` : base.url;
 }
 
 function syncCentreInputs(): void {
@@ -787,7 +876,7 @@ function writeUrl(): void {
   if (gridSize !== 64) p.set('grid', String(gridSize));
   if (showWireframe) p.set('wire', '1');
   if (!showGraticule) p.set('grat', '0');
-  for (const l of layers) p.append('url', l.url);
+  for (const l of layers) p.append('url', layerUrlWithState(l));
   history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
 }
 
@@ -949,11 +1038,38 @@ async function main() {
     const t = e.target as HTMLElement;
     const rm = t.getAttribute('data-remove');
     const fit = t.getAttribute('data-fit');
+    const auto = t.getAttribute('data-auto');
     if (rm !== null) removeLayer(parseInt(rm));
     if (fit !== null) {
       const layer = layers.find(l => l.id === parseInt(fit));
       if (layer) fitLayer(layer);
     }
+    if (auto !== null) {
+      const layer = layers.find(l => l.id === parseInt(auto));
+      if (layer) {
+        applyScale(layer, { auto: true });
+        updateUI();
+      }
+    }
+  });
+  layersEl.addEventListener('change', (e) => {
+    const t = e.target as HTMLInputElement | HTMLSelectElement;
+    const idMin = t.getAttribute('data-min');
+    const idMax = t.getAttribute('data-max');
+    const idCmap = t.getAttribute('data-cmap');
+    const id = idMin ?? idMax ?? idCmap;
+    if (id === null) return;
+    const layer = layers.find(l => l.id === parseInt(id));
+    if (!layer || !layer.scale) return;
+    if (idCmap !== null) {
+      applyScale(layer, { cmap: t.value });
+      const legend = layersEl.querySelector(`.scale-row[data-layer="${layer.id}"] .legend`) as HTMLElement | null;
+      if (legend) legend.style.background = colormapCss(t.value);
+      return;
+    }
+    const v = parseFloat(t.value);
+    if (!isFinite(v)) return;
+    applyScale(layer, idMin !== null ? { min: v, auto: false } : { max: v, auto: false });
   });
   panelToggle.addEventListener('click', () => {
     document.getElementById('controls')!.classList.toggle('collapsed');
