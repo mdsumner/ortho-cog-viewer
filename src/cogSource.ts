@@ -118,6 +118,10 @@ export interface CogUrlOptions {
   cmap?: string;
   curve?: string;
   nodata?: number;       // override
+  shade?: number;        // hillshade strength 0..1 (presence turns it on)
+  zf?: number;           // vertical exaggeration
+  az?: number;           // sun azimuth, degrees clockwise from north
+  alt?: number;          // sun altitude, degrees
   rgb?: boolean;         // force the 8-bit picture path
 }
 
@@ -140,6 +144,10 @@ export function splitCogUrl(url: string): CogUrlOptions {
     cmap: frag.get('cmap') || undefined,
     curve: frag.get('curve') || undefined,
     nodata: num('nodata'),
+    shade: num('shade'),
+    zf: num('zf'),
+    az: num('az'),
+    alt: num('alt'),
     rgb: frag.get('rgb') === '1' || undefined
   };
 }

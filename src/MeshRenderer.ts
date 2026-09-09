@@ -39,6 +39,24 @@ export class MeshRenderer {
   private numeric = false;
   private rgb = false;
   private curve = 0;
+
+  // Hillshade state
+  private uShade: WebGLUniformLocation | null = null;
+  private uTexel: WebGLUniformLocation | null = null;
+  private uGround: WebGLUniformLocation | null = null;
+  private uGeo: WebGLUniformLocation | null = null;
+  private uLatRange: WebGLUniformLocation | null = null;
+  private uZfactor: WebGLUniformLocation | null = null;
+  private uLight: WebGLUniformLocation | null = null;
+  private uShadeStrength: WebGLUniformLocation | null = null;
+  private shade = false;
+  private texel: [number, number] = [0, 0];
+  private ground: [number, number] = [1, 1];
+  private geo = false;
+  private latRange: [number, number] = [-90, 90];
+  private zfactor = 1;
+  private light: [number, number, number] = [0, 0, 1];
+  private shadeStrength = 0.6;
   private range: [number, number] = [0, 1];
   private nodata: number | null = null;
   private opacity = 1;
@@ -91,7 +109,43 @@ export class MeshRenderer {
       uniform bool u_hasNodata;
       uniform float u_opacity;
 
+      // Hillshade (single band only)
+      uniform bool u_shade;
+      uniform vec2 u_texel;        // 1/width, 1/height of the data texture
+      uniform vec2 u_ground;       // metres per texel in x and y (at the equator if geographic)
+      uniform bool u_geo;          // geographic source: scale x by cos(lat)
+      uniform vec2 u_latRange;     // texture minY, maxY in degrees (geographic only)
+      uniform float u_zfactor;
+      uniform vec3 u_light;        // unit vector towards the sun
+      uniform float u_shadeStrength;
+
       out vec4 fragColor;
+
+      float sampleZ(vec2 uv, float centre) {
+        float v = texture(u_texture, uv).r;
+        bool bad = isnan(v) || isinf(v) || (u_hasNodata && abs(v - u_nodata) <= 1e-6 * max(1.0, abs(u_nodata)));
+        return bad ? centre : v;
+      }
+
+      // Horn (1981) slope/aspect from the 3x3 neighbourhood, lit by u_light.
+      float hillshade(vec2 uv, float z) {
+        vec2 t = u_texel;
+        float a = sampleZ(uv + vec2(-t.x,  t.y), z), b = sampleZ(uv + vec2(0.0,  t.y), z), c = sampleZ(uv + vec2( t.x,  t.y), z);
+        float d = sampleZ(uv + vec2(-t.x,  0.0), z),                                        f = sampleZ(uv + vec2( t.x,  0.0), z);
+        float g = sampleZ(uv + vec2(-t.x, -t.y), z), h = sampleZ(uv + vec2(0.0, -t.y), z), i = sampleZ(uv + vec2( t.x, -t.y), z);
+        float gx = u_ground.x;
+        if (u_geo) {
+          float lat = mix(u_latRange.y, u_latRange.x, uv.y);   // v=0 is the top row (maxY)
+          gx *= max(0.05, cos(radians(lat)));
+        }
+        // Texture v increases southward (v = 0 is the north row), so the
+        // +t.y samples (a, b, c) are the SOUTH row and g, h, i the north row.
+        // The normal's y axis points north.
+        float dzdx = ((c + 2.0 * f + i) - (a + 2.0 * d + g)) / (8.0 * gx);
+        float dzdy = ((g + 2.0 * h + i) - (a + 2.0 * b + c)) / (8.0 * u_ground.y);
+        vec3 n = normalize(vec3(-dzdx * u_zfactor, -dzdy * u_zfactor, 1.0));
+        return clamp(dot(n, u_light), 0.0, 1.0);
+      }
 
       bool isNodata(float v) {
         if (isnan(v) || isinf(v)) return true;
@@ -121,7 +175,13 @@ export class MeshRenderer {
         } else if (u_numeric) {
           float v = texture(u_texture, v_texCoord).r;
           if (isNodata(v)) discard;
-          fragColor = vec4(texture(u_cmap, vec2(rescale(v), 0.5)).rgb, u_opacity);
+          vec3 col = texture(u_cmap, vec2(rescale(v), 0.5)).rgb;
+          if (u_shade) {
+            float sh = hillshade(v_texCoord, v);
+            // 0.5 is flat ground under a 45 degree sun; keep flat areas at full colour
+            col *= mix(1.0, sh * 1.4, u_shadeStrength);
+          }
+          fragColor = vec4(col, u_opacity);
         } else {
           vec4 c = texture(u_texture, v_texCoord);
           fragColor = vec4(c.rgb, c.a * u_opacity);
@@ -156,6 +216,14 @@ export class MeshRenderer {
     this.uOpacity = gl.getUniformLocation(program, 'u_opacity');
     this.uRgb = gl.getUniformLocation(program, 'u_rgb');
     this.uCurve = gl.getUniformLocation(program, 'u_curve');
+    this.uShade = gl.getUniformLocation(program, 'u_shade');
+    this.uTexel = gl.getUniformLocation(program, 'u_texel');
+    this.uGround = gl.getUniformLocation(program, 'u_ground');
+    this.uGeo = gl.getUniformLocation(program, 'u_geo');
+    this.uLatRange = gl.getUniformLocation(program, 'u_latRange');
+    this.uZfactor = gl.getUniformLocation(program, 'u_zfactor');
+    this.uLight = gl.getUniformLocation(program, 'u_light');
+    this.uShadeStrength = gl.getUniformLocation(program, 'u_shadeStrength');
 
     // Wireframe program
     const lvs = this.compileShader(gl.VERTEX_SHADER, `#version 300 es
@@ -392,6 +460,30 @@ export class MeshRenderer {
     this.range = [min, max === min ? min + 1e-6 : max];
   }
 
+  /**
+   * Geometry of the data texture for hillshading: texel size and ground
+   * distance per texel. Call after each float texture upload.
+   */
+  setTexelGeometry(width: number, height: number, groundX: number, groundY: number, geo: boolean, latMin: number, latMax: number): void {
+    this.texel = [1 / width, 1 / height];
+    this.ground = [Math.max(1e-9, groundX), Math.max(1e-9, groundY)];
+    this.geo = geo;
+    this.latRange = [latMin, latMax];
+  }
+
+  /**
+   * @param azimuth  degrees clockwise from north
+   * @param altitude degrees above the horizon
+   */
+  setHillshade(on: boolean, strength: number, zfactor: number, azimuth: number, altitude: number): void {
+    this.shade = on;
+    this.shadeStrength = Math.max(0, Math.min(1, strength));
+    this.zfactor = zfactor;
+    const az = azimuth * Math.PI / 180, alt = altitude * Math.PI / 180;
+    // x east, y north, z up
+    this.light = [Math.sin(az) * Math.cos(alt), Math.cos(az) * Math.cos(alt), Math.sin(alt)];
+  }
+
   setCurve(curve: 'linear' | 'sqrt' | 'log'): void {
     this.curve = curve === 'sqrt' ? 1 : curve === 'log' ? 2 : 0;
   }
@@ -488,6 +580,14 @@ export class MeshRenderer {
     gl.uniform1f(this.uOpacity, this.opacity);
     gl.uniform1i(this.uRgb, this.rgb ? 1 : 0);
     gl.uniform1i(this.uCurve, this.curve);
+    gl.uniform1i(this.uShade, this.shade && !this.rgb ? 1 : 0);
+    gl.uniform2f(this.uTexel, this.texel[0], this.texel[1]);
+    gl.uniform2f(this.uGround, this.ground[0], this.ground[1]);
+    gl.uniform1i(this.uGeo, this.geo ? 1 : 0);
+    gl.uniform2f(this.uLatRange, this.latRange[0], this.latRange[1]);
+    gl.uniform1f(this.uZfactor, this.zfactor);
+    gl.uniform3f(this.uLight, this.light[0], this.light[1], this.light[2]);
+    gl.uniform1f(this.uShadeStrength, this.shadeStrength);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.cmapTexture);
     gl.uniform1i(this.uCmap, 1);
@@ -528,6 +628,14 @@ export class MeshRenderer {
     gl.uniform1f(this.uOpacity, this.opacity);
     gl.uniform1i(this.uRgb, this.rgb ? 1 : 0);
     gl.uniform1i(this.uCurve, this.curve);
+    gl.uniform1i(this.uShade, this.shade && !this.rgb ? 1 : 0);
+    gl.uniform2f(this.uTexel, this.texel[0], this.texel[1]);
+    gl.uniform2f(this.uGround, this.ground[0], this.ground[1]);
+    gl.uniform1i(this.uGeo, this.geo ? 1 : 0);
+    gl.uniform2f(this.uLatRange, this.latRange[0], this.latRange[1]);
+    gl.uniform1f(this.uZfactor, this.zfactor);
+    gl.uniform3f(this.uLight, this.light[0], this.light[1], this.light[2]);
+    gl.uniform1f(this.uShadeStrength, this.shadeStrength);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.cmapTexture);
     gl.uniform1i(this.uCmap, 1);

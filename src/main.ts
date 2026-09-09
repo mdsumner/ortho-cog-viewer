@@ -110,6 +110,11 @@ interface ScaleState {
   /** nodata override (null = use the file's) */
   nodata: number | null;
   nodataAuto: boolean;
+  shade: boolean;
+  shadeStrength: number;
+  zfactor: number;
+  azimuth: number;
+  altitude: number;
 }
 
 const MAX_TEXTURE_DIM = 4096;
@@ -482,11 +487,18 @@ async function addLayer(url: string): Promise<Layer | null> {
         curve,
         auto: !explicit && !pinned,
         nodata: o.nodata ?? null,
-        nodataAuto: o.nodata === undefined
+        nodataAuto: o.nodata === undefined,
+        shade: o.shade !== undefined,
+        shadeStrength: o.shade ?? 0.6,
+        zfactor: o.zf ?? 1,
+        azimuth: o.az ?? 315,
+        altitude: o.alt ?? 45
       };
       renderer.setColormap(colormapBytes(cmap));
       renderer.setRange(layer.scale.min, layer.scale.max);
       renderer.setCurve(curve);
+      const sc = layer.scale;
+      renderer.setHillshade(sc.shade, sc.shadeStrength, sc.zfactor, sc.azimuth, sc.altitude);
     }
 
     updateLayerMesh(layer);
@@ -548,6 +560,17 @@ async function updateLayerTexture(layer: Layer): Promise<void> {
       layer.texSize = `${f.width}x${f.height}`;
       layer.stats = f.stats;
       layer.renderer.updateFloatTexture(f.data, f.width, f.height, f.nodata, f.channels);
+      {
+        const b = data.bounds;
+        const geo = /4326|4269|longlat/.test(layer.source.crs);
+        const k = geo ? 111319.49 : 1;   // degrees -> metres (x is scaled by cos(lat) in the shader)
+        layer.renderer.setTexelGeometry(
+          f.width, f.height,
+          (b.maxX - b.minX) / f.width * k,
+          (b.maxY - b.minY) / f.height * k,
+          geo, b.minY, b.maxY
+        );
+      }
       if (layer.scale && layer.scale.auto && f.stats.count > 0) {
         layer.scale.min = f.stats.p2;
         layer.scale.max = f.stats.p98;
@@ -796,7 +819,18 @@ function updateUI(): void {
         <label class="wide">nodata</label>
         <input type="text" class="num" data-nodata="${layer.id}" value="${ndValue}" placeholder="none" title="nodata value; blank = none" />
         <button data-nodata-auto="${layer.id}" title="use the file's nodata tag"${sc.nodataAuto ? ' disabled' : ''}>auto</button>
-      </div>`;
+      </div>
+      ${sc.mode === 'rgb' ? '' : `<div class="scale-row" data-layer="${layer.id}">
+        <input type="checkbox" data-shade="${layer.id}"${sc.shade ? ' checked' : ''} />
+        <label class="wide">hillshade</label>
+        <input type="range" min="0" max="1" step="0.05" value="${sc.shadeStrength}" data-shade-strength="${layer.id}" title="strength" style="width:70px" />
+        <label class="wide">z</label>
+        <input type="text" class="num tiny" data-zf="${layer.id}" value="${sc.zfactor}" title="vertical exaggeration" />
+        <label class="wide">az</label>
+        <input type="text" class="num tiny" data-az="${layer.id}" value="${sc.azimuth}" title="sun azimuth (deg from north)" />
+        <label class="wide">alt</label>
+        <input type="text" class="num tiny" data-alt="${layer.id}" value="${sc.altitude}" title="sun altitude (deg)" />
+      </div>`}`;
     }
     return `
       <div class="layer-item">
@@ -930,6 +964,7 @@ function applyScale(layer: Layer, partial: Partial<ScaleState> & { minmax?: bool
   layer.renderer.setRange(sc.min, sc.max);
   layer.renderer.setColormap(colormapBytes(sc.cmap));
   layer.renderer.setCurve(sc.curve);
+  layer.renderer.setHillshade(sc.shade, sc.shadeStrength, sc.zfactor, sc.azimuth, sc.altitude);
   const cog = layer.source as COGSource;
   const nd = sc.nodataAuto ? cog.fileNodata : sc.nodata;
   cog.nodata = nd;
@@ -969,7 +1004,7 @@ async function changeBands(layer: Layer, mode: 'single' | 'rgb', bands: number[]
 function layerUrlWithState(layer: Layer): string {
   const base = splitCogUrl(layer.url);
   const frag = fragmentParams(layer.url);
-  for (const k of ['band', 'bands', 'min', 'max', 'cmap', 'curve', 'nodata', 'alpha']) frag.delete(k);
+  for (const k of ['band', 'bands', 'min', 'max', 'cmap', 'curve', 'nodata', 'alpha', 'shade', 'zf', 'az', 'alt']) frag.delete(k);
   if (layer.opacity < 1) frag.set('alpha', layer.opacity.toFixed(2));
   if (!layer.scale) {
     const q0 = frag.toString();
@@ -989,6 +1024,12 @@ function layerUrlWithState(layer: Layer): string {
   if (sc.mode !== 'rgb' && sc.cmap !== 'viridis') frag.set('cmap', sc.cmap);
   if (sc.curve !== 'linear') frag.set('curve', sc.curve);
   if (!sc.nodataAuto && sc.nodata !== null) frag.set('nodata', String(sc.nodata));
+  if (sc.shade) {
+    frag.set('shade', sc.shadeStrength.toFixed(2));
+    if (sc.zfactor !== 1) frag.set('zf', String(sc.zfactor));
+    if (sc.azimuth !== 315) frag.set('az', String(sc.azimuth));
+    if (sc.altitude !== 45) frag.set('alt', String(sc.altitude));
+  }
   const q = frag.toString();
   return q ? `${base.url}#${q}` : base.url;
 }
@@ -1273,6 +1314,12 @@ async function main() {
   });
   layersEl.addEventListener('input', (e) => {
     const t = e.target as HTMLInputElement;
+    const sid = t.getAttribute('data-shade-strength');
+    if (sid !== null) {
+      const layer = layers.find(l => l.id === parseInt(sid));
+      if (layer) applyScale(layer, { shadeStrength: parseFloat(t.value) });
+      return;
+    }
     const id = t.getAttribute('data-alpha');
     if (id === null) return;
     const layer = layers.find(l => l.id === parseInt(id));
@@ -1295,7 +1342,8 @@ async function main() {
     const t = e.target as HTMLInputElement | HTMLSelectElement;
     const get = (k: string) => t.getAttribute(k);
     const id = get('data-min') ?? get('data-max') ?? get('data-cmap') ?? get('data-curve') ??
-               get('data-nodata') ?? get('data-band') ?? get('data-mode');
+               get('data-nodata') ?? get('data-band') ?? get('data-mode') ??
+               get('data-shade') ?? get('data-zf') ?? get('data-az') ?? get('data-alt');
     if (id === null) return;
     const layer = layers.find(l => l.id === parseInt(id));
     if (!layer || !layer.scale) return;
@@ -1325,6 +1373,18 @@ async function main() {
     }
     if (get('data-curve') !== null) {
       applyScale(layer, { curve: t.value as Curve });
+      return;
+    }
+    if (get('data-shade') !== null) {
+      applyScale(layer, { shade: (t as HTMLInputElement).checked });
+      return;
+    }
+    if (get('data-zf') !== null || get('data-az') !== null || get('data-alt') !== null) {
+      const v = parseFloat(t.value);
+      if (!isFinite(v)) return;
+      if (get('data-zf') !== null) applyScale(layer, { zfactor: v });
+      else if (get('data-az') !== null) applyScale(layer, { azimuth: v });
+      else applyScale(layer, { altitude: v });
       return;
     }
     if (get('data-nodata') !== null) {

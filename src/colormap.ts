@@ -45,6 +45,10 @@ export const COLORMAPS: Record<string, Colormap> = {
     label: 'grey',
     stops: [[0, 0, 0], [255, 255, 255]]
   },
+  flat: {
+    label: 'flat (hillshade only)',
+    stops: [[190, 190, 190], [190, 190, 190]]
+  },
   blues: {
     label: 'blues',
     stops: [[247, 251, 255], [198, 219, 239], [107, 174, 214], [33, 113, 181], [8, 48, 107]]
