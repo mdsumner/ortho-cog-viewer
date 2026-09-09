@@ -5,7 +5,14 @@
 
 export interface Colormap {
   label: string;
-  stops: [number, number, number][];   // 0..255 RGB, evenly spaced
+  stops: [number, number, number][];   // 0..255 RGB
+  /**
+   * For value-anchored palettes: the data value of each stop, ascending.
+   * Selecting such a palette pins the layer's range to [values[0], values[n-1]]
+   * and the ramp is interpolated in value space, so a colour always means the
+   * same depth or height regardless of what the data's own range is.
+   */
+  values?: number[];
 }
 
 export const COLORMAPS: Record<string, Colormap> = {
@@ -50,8 +57,27 @@ export const COLORMAPS: Record<string, Colormap> = {
   bathy: {
     label: 'bathymetry (deep-shallow)',
     stops: [[8, 24, 68], [20, 60, 120], [40, 110, 170], [90, 170, 210], [170, 220, 235], [235, 245, 250]]
+  },
+  // DiRT bathymetry/topography palette as used aboard RSV Nuyina: anchored
+  // at depths in metres, -8000 to +1000, so it scales sensibly for the whole
+  // ocean with very few control points.
+  dirt: {
+    label: 'DiRT bathy/topo (m, anchored)',
+    values: [-8000, -7000, -6000, -5000, -4000, -3500, -3000, -2500, -2000, -1500, -1000, -750, -500, -250, 0, 500, 1000],
+    stops: [[126, 2, 2], [126, 2, 62], [126, 2, 118], [75, 2, 126], [30, 1, 136], [1, 25, 146],
+            [1, 84, 156], [1, 152, 167], [1, 177, 127], [1, 187, 64], [8, 198, 0], [86, 208, 0],
+            [172, 218, 0], [229, 192, 0], [255, 255, 255], [236, 254, 251], [207, 246, 239]]
   }
 };
+
+/**
+ * Data range a palette pins the layer to, or null for relative palettes.
+ */
+export function colormapRange(name: string): [number, number] | null {
+  const cm = COLORMAPS[name];
+  if (!cm || !cm.values) return null;
+  return [cm.values[0], cm.values[cm.values.length - 1]];
+}
 
 export function isColormapName(s: string): boolean {
   return Object.prototype.hasOwnProperty.call(COLORMAPS, s);
@@ -64,10 +90,16 @@ export function colormapBytes(name: string): Uint8Array {
   const cm = COLORMAPS[name] || COLORMAPS.viridis;
   const out = new Uint8Array(256 * 4);
   const n = cm.stops.length;
+  // Stop positions in [0, 1]: evenly spaced, or by value for anchored palettes
+  const pos: number[] = cm.values
+    ? cm.values.map(v => (v - cm.values![0]) / (cm.values![n - 1] - cm.values![0]))
+    : cm.stops.map((_, i) => i / (n - 1));
   for (let i = 0; i < 256; i++) {
-    const t = i / 255 * (n - 1);
-    const k = Math.min(n - 2, Math.floor(t));
-    const f = t - k;
+    const x = i / 255;
+    let k = 0;
+    while (k < n - 2 && pos[k + 1] < x) k++;
+    const span = pos[k + 1] - pos[k] || 1;
+    const f = Math.max(0, Math.min(1, (x - pos[k]) / span));
     const a = cm.stops[k], b = cm.stops[k + 1];
     out[i * 4 + 0] = Math.round(a[0] + (b[0] - a[0]) * f);
     out[i * 4 + 1] = Math.round(a[1] + (b[1] - a[1]) * f);
@@ -82,5 +114,9 @@ export function colormapBytes(name: string): Uint8Array {
  */
 export function colormapCss(name: string): string {
   const cm = COLORMAPS[name] || COLORMAPS.viridis;
-  return `linear-gradient(to right, ${cm.stops.map(s => `rgb(${s[0]},${s[1]},${s[2]})`).join(', ')})`;
+  const n = cm.stops.length;
+  const pos = cm.values
+    ? cm.values.map(v => (v - cm.values![0]) / (cm.values![n - 1] - cm.values![0]))
+    : cm.stops.map((_, i) => i / (n - 1));
+  return `linear-gradient(to right, ${cm.stops.map((s, i) => `rgb(${s[0]},${s[1]},${s[2]}) ${(pos[i] * 100).toFixed(1)}%`).join(', ')})`;
 }

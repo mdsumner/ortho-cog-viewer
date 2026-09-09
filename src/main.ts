@@ -18,7 +18,7 @@ import { buildLayerGeometry, transformBounds, SourceBounds } from './uv';
 import { registerProjections } from './crs';
 import { RasterSource, planFetch, contains } from './source';
 import { COGSource, splitCogUrl } from './cogSource';
-import { COLORMAPS, colormapBytes, colormapCss, isColormapName } from './colormap';
+import { COLORMAPS, colormapBytes, colormapCss, colormapRange, isColormapName } from './colormap';
 import { FloatStats } from './source';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './wmts';
@@ -85,8 +85,24 @@ interface Layer {
   needBBox: SourceBounds | null;
   needPx: { w: number; h: number } | null;
   /** numeric layers: colour scaling state */
-  scale: { min: number; max: number; cmap: string; auto: boolean } | null;
+  scale: ScaleState | null;
   stats: FloatStats | null;
+}
+
+type Curve = 'linear' | 'sqrt' | 'log';
+
+/** Rendering state of a numeric layer. Everything here is a uniform. */
+interface ScaleState {
+  mode: 'single' | 'rgb';
+  min: number;
+  max: number;
+  cmap: string;
+  curve: Curve;
+  /** range follows the 2-98 percentile of each fetched window */
+  auto: boolean;
+  /** nodata override (null = use the file's) */
+  nodata: number | null;
+  nodataAuto: boolean;
 }
 
 const MAX_TEXTURE_DIM = 4096;
@@ -440,11 +456,24 @@ async function addLayer(url: string): Promise<Layer | null> {
     };
     if (source.numeric) {
       const o = splitCogUrl(url);
+      const cog = source as COGSource;
       const cmap = o.cmap && isColormapName(o.cmap) ? o.cmap : 'viridis';
+      const pinned = colormapRange(cmap);
       const explicit = o.min !== undefined && o.max !== undefined;
-      layer.scale = { min: o.min ?? 0, max: o.max ?? 1, cmap, auto: !explicit };
+      const curve: Curve = o.curve === 'sqrt' || o.curve === 'log' ? o.curve : 'linear';
+      layer.scale = {
+        mode: cog.rgbBands ? 'rgb' : 'single',
+        min: pinned ? pinned[0] : (o.min ?? 0),
+        max: pinned ? pinned[1] : (o.max ?? 1),
+        cmap,
+        curve,
+        auto: !explicit && !pinned,
+        nodata: o.nodata ?? null,
+        nodataAuto: o.nodata === undefined
+      };
       renderer.setColormap(colormapBytes(cmap));
       renderer.setRange(layer.scale.min, layer.scale.max);
+      renderer.setCurve(curve);
     }
 
     updateLayerMesh(layer);
@@ -505,7 +534,7 @@ async function updateLayerTexture(layer: Layer): Promise<void> {
       const f = data.float;
       layer.texSize = `${f.width}x${f.height}`;
       layer.stats = f.stats;
-      layer.renderer.updateFloatTexture(f.data, f.width, f.height, f.nodata);
+      layer.renderer.updateFloatTexture(f.data, f.width, f.height, f.nodata, f.channels);
       if (layer.scale && layer.scale.auto && f.stats.count > 0) {
         layer.scale.min = f.stats.p2;
         layer.scale.max = f.stats.p98;
@@ -710,18 +739,50 @@ function updateUI(): void {
       const sc = layer.scale;
       const cog = src as COGSource;
       const st = layer.stats;
-      const opts = Object.entries(COLORMAPS).map(([k, v]) =>
+      const n = cog.samplesPerPixel;
+      const pinned = colormapRange(sc.cmap) !== null;
+      const cmapOpts = Object.entries(COLORMAPS).map(([k, v]) =>
         `<option value="${k}"${k === sc.cmap ? ' selected' : ''}>${v.label}</option>`).join('');
-      const bandInfo = cog.samplesPerPixel > 1 ? ` band ${cog.band + 1}/${cog.samplesPerPixel}` : '';
-      const statInfo = st && st.count ? ` data ${fmtNum(st.min)}..${fmtNum(st.max)}` : '';
+      const bandOpts = (sel: number) => Array.from({ length: n }, (_, i) =>
+        `<option value="${i + 1}"${i === sel ? ' selected' : ''}>${i + 1}</option>`).join('');
+      const bandUI = sc.mode === 'rgb' && cog.rgbBands
+        ? `R <select data-band="${layer.id}" data-ch="0">${bandOpts(cog.rgbBands[0])}</select>
+           G <select data-band="${layer.id}" data-ch="1">${bandOpts(cog.rgbBands[1])}</select>
+           B <select data-band="${layer.id}" data-ch="2">${bandOpts(cog.rgbBands[2])}</select>`
+        : (n > 1 ? `band <select data-band="${layer.id}" data-ch="0">${bandOpts(cog.band)}</select>` : '');
+      const modeUI = n >= 3
+        ? `<select data-mode="${layer.id}">
+             <option value="single"${sc.mode === 'single' ? ' selected' : ''}>single band + colormap</option>
+             <option value="rgb"${sc.mode === 'rgb' ? ' selected' : ''}>RGB composite</option>
+           </select>` : '';
+      const statInfo = st && st.count ? `data ${fmtNum(st.min)}..${fmtNum(st.max)}` : '';
+      const curveOpts = (['linear', 'sqrt', 'log'] as Curve[]).map(c =>
+        `<option value="${c}"${c === sc.curve ? ' selected' : ''}>${c}</option>`).join('');
+      const ndValue = sc.nodataAuto ? (cog.fileNodata === null ? '' : String(cog.fileNodata)) : String(sc.nodata ?? '');
       scaleRow = `
       <div class="scale-row" data-layer="${layer.id}">
-        <span class="legend" style="background:${colormapCss(sc.cmap)}"></span>
-        <input type="text" class="num" data-min="${layer.id}" value="${fmtNum(sc.min)}" title="min" />
-        <input type="text" class="num" data-max="${layer.id}" value="${fmtNum(sc.max)}" title="max" />
-        <select data-cmap="${layer.id}">${opts}</select>
-        <button data-auto="${layer.id}" title="2-98 percentile of the current window">auto</button>
-        <span class="hint">${bandInfo}${statInfo}${cog.nodata !== null ? ` nodata ${cog.nodata}` : ''}</span>
+        ${modeUI} ${bandUI}
+        <span class="hint">${statInfo}</span>
+      </div>
+      <div class="scale-row" data-layer="${layer.id}">
+        <canvas class="hist" data-hist="${layer.id}" width="200" height="36"></canvas>
+      </div>
+      <div class="scale-row" data-layer="${layer.id}">
+        <span class="hist-legend" style="background:${sc.mode === 'rgb' ? 'linear-gradient(to right,#000,#fff)' : colormapCss(sc.cmap)}"></span>
+        <span class="hint">${pinned ? 'anchored palette: colours are fixed to values' : ''}</span>
+      </div>
+      <div class="scale-row" data-layer="${layer.id}">
+        <input type="text" class="num" data-min="${layer.id}" value="${fmtNum(sc.min)}" title="min"${pinned ? ' disabled' : ''} />
+        <input type="text" class="num" data-max="${layer.id}" value="${fmtNum(sc.max)}" title="max"${pinned ? ' disabled' : ''} />
+        <button data-auto="${layer.id}" title="2-98 percentile of the current window"${pinned ? ' disabled' : ''}>2-98%</button>
+        <button data-minmax="${layer.id}" title="full range of the current window"${pinned ? ' disabled' : ''}>min/max</button>
+        <select data-curve="${layer.id}" title="curve">${curveOpts}</select>
+      </div>
+      <div class="scale-row" data-layer="${layer.id}">
+        ${sc.mode === 'rgb' ? '' : `<select data-cmap="${layer.id}">${cmapOpts}</select>`}
+        <label class="wide">nodata</label>
+        <input type="text" class="num" data-nodata="${layer.id}" value="${ndValue}" placeholder="none" title="nodata value; blank = none" />
+        <button data-nodata-auto="${layer.id}" title="use the file's nodata tag"${sc.nodataAuto ? ' disabled' : ''}>auto</button>
       </div>`;
     }
     return `
@@ -733,6 +794,88 @@ function updateUI(): void {
       </div>${scaleRow}${attr}
     `;
   }).join('');
+  for (const layer of layers) drawHistogram(layer);
+}
+
+/**
+ * Histogram of the fetched window with the current min/max as handles.
+ */
+function drawHistogram(layer: Layer): void {
+  if (!layer.scale) return;
+  const c = layersEl.querySelector(`canvas[data-hist="${layer.id}"]`) as HTMLCanvasElement | null;
+  if (!c) return;
+  const ctx = c.getContext('2d')!;
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, W, H);
+  const st = layer.stats;
+  if (!st || !st.count) return;
+  const sc = layer.scale;
+  // Axis spans the union of data range and current range so handles are visible
+  const lo = Math.min(st.min, sc.min), hi = Math.max(st.max, sc.max);
+  const span = hi - lo || 1;
+  const bins = st.hist.length;
+  let peak = 0;
+  for (let i = 0; i < bins; i++) if (st.hist[i] > peak) peak = st.hist[i];
+  const lpeak = Math.log(1 + peak);
+  ctx.fillStyle = '#777';
+  for (let x = 0; x < W; x++) {
+    // bin for this pixel column (data bins cover st.min..st.max)
+    const v0 = lo + (x / W) * span;
+    const v1 = lo + ((x + 1) / W) * span;
+    const b0 = Math.floor((v0 - st.min) / (st.max - st.min || 1) * bins);
+    const b1 = Math.max(b0 + 1, Math.ceil((v1 - st.min) / (st.max - st.min || 1) * bins));
+    let m = 0;
+    for (let b = Math.max(0, b0); b < Math.min(bins, b1); b++) if (st.hist[b] > m) m = st.hist[b];
+    if (m > 0) {
+      const h = Math.max(1, Math.round((Math.log(1 + m) / lpeak) * (H - 2)));
+      ctx.fillRect(x, H - h, 1, h);
+    }
+  }
+  // Selected range and handles
+  const xMin = ((sc.min - lo) / span) * W;
+  const xMax = ((sc.max - lo) / span) * W;
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(xMin, 0, Math.max(1, xMax - xMin), H);
+  ctx.fillStyle = '#ff0';
+  ctx.fillRect(Math.round(xMin) - 1, 0, 2, H);
+  ctx.fillRect(Math.round(xMax) - 1, 0, 2, H);
+}
+
+/**
+ * Drag the min/max handles on a histogram.
+ */
+function histogramPointer(layer: Layer, canvas: HTMLCanvasElement, e: PointerEvent): void {
+  if (!layer.scale || !layer.stats || !layer.stats.count) return;
+  if (colormapRange(layer.scale.cmap)) return;  // pinned palette
+  const st = layer.stats, sc = layer.scale;
+  const rect = canvas.getBoundingClientRect();
+  const toValue = (clientX: number) => {
+    const lo = Math.min(st.min, sc.min), hi = Math.max(st.max, sc.max);
+    const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return lo + x * (hi - lo);
+  };
+  const v = toValue(e.clientX);
+  const which: 'min' | 'max' = Math.abs(v - sc.min) <= Math.abs(v - sc.max) ? 'min' : 'max';
+  const move = (ev: PointerEvent) => {
+    const nv = toValue(ev.clientX);
+    if (which === 'min') applyScale(layer, { min: Math.min(nv, sc.max), auto: false }, false);
+    else applyScale(layer, { max: Math.max(nv, sc.min), auto: false }, false);
+    drawHistogram(layer);
+    const row = layersEl.querySelector(`.scale-row[data-layer="${layer.id}"] [data-${which}]`) as HTMLInputElement | null;
+    if (row) row.value = fmtNum(which === 'min' ? sc.min : sc.max);
+  };
+  const up = () => {
+    canvas.removeEventListener('pointermove', move);
+    canvas.removeEventListener('pointerup', up);
+    canvas.releasePointerCapture(e.pointerId);
+    scheduleUrlUpdate();
+  };
+  canvas.setPointerCapture(e.pointerId);
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+  move(e);
 }
 
 function fmtNum(v: number): string {
@@ -745,19 +888,62 @@ function fmtNum(v: number): string {
 }
 
 /**
- * Apply an edited min/max/colormap to a numeric layer: uniforms only, no refetch.
+ * Apply an edited scale to a numeric layer: uniforms only, no refetch.
  */
-function applyScale(layer: Layer, partial: Partial<{ min: number; max: number; cmap: string; auto: boolean }>): void {
+function applyScale(layer: Layer, partial: Partial<ScaleState> & { minmax?: boolean }, updateUrl = true): void {
   if (!layer.scale) return;
-  Object.assign(layer.scale, partial);
-  if (partial.auto && layer.stats && layer.stats.count) {
-    layer.scale.min = layer.stats.p2;
-    layer.scale.max = layer.stats.p98;
+  const sc = layer.scale;
+  const { minmax, ...rest } = partial;
+  Object.assign(sc, rest);
+  const pinned = colormapRange(sc.cmap);
+  if (pinned) {
+    sc.min = pinned[0];
+    sc.max = pinned[1];
+    sc.auto = false;
+  } else if (layer.stats && layer.stats.count) {
+    if (minmax) {
+      sc.min = layer.stats.min;
+      sc.max = layer.stats.max;
+      sc.auto = false;
+    } else if (sc.auto) {
+      sc.min = layer.stats.p2;
+      sc.max = layer.stats.p98;
+    }
   }
-  layer.renderer.setRange(layer.scale.min, layer.scale.max);
-  layer.renderer.setColormap(colormapBytes(layer.scale.cmap));
+  layer.renderer.setRange(sc.min, sc.max);
+  layer.renderer.setColormap(colormapBytes(sc.cmap));
+  layer.renderer.setCurve(sc.curve);
+  const cog = layer.source as COGSource;
+  const nd = sc.nodataAuto ? cog.fileNodata : sc.nodata;
+  cog.nodata = nd;
+  layer.renderer.setNodata(nd);
   render(viewController.getState());
-  scheduleUrlUpdate();
+  if (updateUrl) scheduleUrlUpdate();
+}
+
+/**
+ * Band or mode changes need the data itself: refetch, then re-run auto range.
+ */
+async function changeBands(layer: Layer, mode: 'single' | 'rgb', bands: number[]): Promise<void> {
+  if (!layer.scale) return;
+  const cog = layer.source as COGSource;
+  const n = cog.samplesPerPixel;
+  const clamp = (b: number) => Math.max(0, Math.min(n - 1, b));
+  if (mode === 'rgb') {
+    cog.rgbBands = [clamp(bands[0]), clamp(bands[1]), clamp(bands[2])];
+  } else {
+    cog.rgbBands = null;
+    cog.band = clamp(bands[0]);
+  }
+  layer.scale.mode = mode;
+  layer.hasTexture = false;
+  layer.texLevel = -1;
+  layer.fetchSeq++;          // drop anything in flight
+  layer.pending = null;
+  await updateLayerTexture(layer);
+  // stats changed with the new bands: the nodata may too, so recompute
+  applyScale(layer, {});
+  updateUI();
 }
 
 /**
@@ -768,12 +954,19 @@ function layerUrlWithState(layer: Layer): string {
   const base = splitCogUrl(layer.url);
   const frag = new URLSearchParams();
   const cog = layer.source as COGSource;
-  if (cog.samplesPerPixel > 1) frag.set('band', String(cog.band + 1));
-  if (!layer.scale.auto) {
-    frag.set('min', String(layer.scale.min));
-    frag.set('max', String(layer.scale.max));
+  const sc = layer.scale;
+  if (sc.mode === 'rgb' && cog.rgbBands) {
+    frag.set('bands', cog.rgbBands.map(b => b + 1).join(','));
+  } else if (cog.samplesPerPixel > 1) {
+    frag.set('band', String(cog.band + 1));
   }
-  if (layer.scale.cmap !== 'viridis') frag.set('cmap', layer.scale.cmap);
+  if (!sc.auto && !colormapRange(sc.cmap)) {
+    frag.set('min', String(sc.min));
+    frag.set('max', String(sc.max));
+  }
+  if (sc.mode !== 'rgb' && sc.cmap !== 'viridis') frag.set('cmap', sc.cmap);
+  if (sc.curve !== 'linear') frag.set('curve', sc.curve);
+  if (!sc.nodataAuto && sc.nodata !== null) frag.set('nodata', String(sc.nodata));
   const q = frag.toString();
   return q ? `${base.url}#${q}` : base.url;
 }
@@ -1039,37 +1232,78 @@ async function main() {
     const rm = t.getAttribute('data-remove');
     const fit = t.getAttribute('data-fit');
     const auto = t.getAttribute('data-auto');
+    const minmax = t.getAttribute('data-minmax');
+    const ndAuto = t.getAttribute('data-nodata-auto');
     if (rm !== null) removeLayer(parseInt(rm));
     if (fit !== null) {
       const layer = layers.find(l => l.id === parseInt(fit));
       if (layer) fitLayer(layer);
     }
-    if (auto !== null) {
-      const layer = layers.find(l => l.id === parseInt(auto));
-      if (layer) {
-        applyScale(layer, { auto: true });
-        updateUI();
-      }
+    const id = auto ?? minmax ?? ndAuto;
+    if (id !== null) {
+      const layer = layers.find(l => l.id === parseInt(id));
+      if (!layer) return;
+      if (auto !== null) applyScale(layer, { auto: true });
+      else if (minmax !== null) applyScale(layer, { minmax: true });
+      else applyScale(layer, { nodataAuto: true, nodata: null });
+      updateUI();
     }
   });
-  layersEl.addEventListener('change', (e) => {
+  layersEl.addEventListener('pointerdown', (e) => {
+    const t = e.target as HTMLElement;
+    const h = t.getAttribute('data-hist');
+    if (h === null) return;
+    const layer = layers.find(l => l.id === parseInt(h));
+    if (layer) histogramPointer(layer, t as HTMLCanvasElement, e as PointerEvent);
+  });
+  layersEl.addEventListener('change', async (e) => {
     const t = e.target as HTMLInputElement | HTMLSelectElement;
-    const idMin = t.getAttribute('data-min');
-    const idMax = t.getAttribute('data-max');
-    const idCmap = t.getAttribute('data-cmap');
-    const id = idMin ?? idMax ?? idCmap;
+    const get = (k: string) => t.getAttribute(k);
+    const id = get('data-min') ?? get('data-max') ?? get('data-cmap') ?? get('data-curve') ??
+               get('data-nodata') ?? get('data-band') ?? get('data-mode');
     if (id === null) return;
     const layer = layers.find(l => l.id === parseInt(id));
     if (!layer || !layer.scale) return;
-    if (idCmap !== null) {
+    const cog = layer.source as COGSource;
+    if (get('data-mode') !== null) {
+      const mode = t.value as 'single' | 'rgb';
+      const bands = mode === 'rgb' ? [0, 1, 2] : [cog.band];
+      await changeBands(layer, mode, bands);
+      return;
+    }
+    if (get('data-band') !== null) {
+      const ch = parseInt(get('data-ch') || '0');
+      const b = parseInt(t.value) - 1;
+      if (layer.scale.mode === 'rgb' && cog.rgbBands) {
+        const bands = [...cog.rgbBands];
+        bands[ch] = b;
+        await changeBands(layer, 'rgb', bands);
+      } else {
+        await changeBands(layer, 'single', [b]);
+      }
+      return;
+    }
+    if (get('data-cmap') !== null) {
       applyScale(layer, { cmap: t.value });
-      const legend = layersEl.querySelector(`.scale-row[data-layer="${layer.id}"] .legend`) as HTMLElement | null;
-      if (legend) legend.style.background = colormapCss(t.value);
+      updateUI();   // pinned palettes change min/max and disable inputs
+      return;
+    }
+    if (get('data-curve') !== null) {
+      applyScale(layer, { curve: t.value as Curve });
+      return;
+    }
+    if (get('data-nodata') !== null) {
+      const txt = t.value.trim();
+      const v = txt === '' ? null : parseFloat(txt);
+      if (v !== null && !isFinite(v)) return;
+      applyScale(layer, { nodata: v, nodataAuto: false });
+      updateUI();
       return;
     }
     const v = parseFloat(t.value);
     if (!isFinite(v)) return;
-    applyScale(layer, idMin !== null ? { min: v, auto: false } : { max: v, auto: false });
+    applyScale(layer, get('data-min') !== null ? { min: v, auto: false } : { max: v, auto: false });
+    drawHistogram(layer);
   });
   panelToggle.addEventListener('click', () => {
     document.getElementById('controls')!.classList.toggle('collapsed');

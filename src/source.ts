@@ -24,13 +24,15 @@ export interface FloatStats {
   p2: number;     // 2nd percentile
   p98: number;    // 98th percentile
   count: number;  // valid samples
+  /** counts per bin over [min, max] */
+  hist: Uint32Array;
 }
 
 export interface TextureData {
   /** RGBA image, for picture-like sources */
   canvas?: HTMLCanvasElement;
   /** single-band numeric data, for colour mapping on the GPU */
-  float?: { data: Float32Array; width: number; height: number; nodata: number | null; stats: FloatStats };
+  float?: { data: Float32Array; width: number; height: number; channels: 1 | 3; nodata: number | null; stats: FloatStats };
   bounds: SourceBounds;  // extent of the texture in source CRS units
 }
 

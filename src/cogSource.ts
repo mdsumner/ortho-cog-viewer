@@ -73,7 +73,7 @@ function toCanvas(data: ArrayLike<number>, width: number, height: number, spp: n
  * Percentiles and range of the valid values in a float window, from a
  * histogram over a bounded sample so huge windows stay cheap.
  */
-function floatStats(data: Float32Array, nodata: number | null): FloatStats {
+export function floatStats(data: Float32Array, nodata: number | null): FloatStats {
   const n = data.length;
   const step = Math.max(1, Math.floor(n / 500000));
   let min = Infinity, max = -Infinity, count = 0;
@@ -84,10 +84,10 @@ function floatStats(data: Float32Array, nodata: number | null): FloatStats {
     if (v > max) max = v;
     count++;
   }
-  if (count === 0) return { min: 0, max: 1, p2: 0, p98: 1, count: 0 };
-  if (max === min) return { min, max, p2: min, p98: max, count };
   const bins = 1024;
   const hist = new Uint32Array(bins);
+  if (count === 0) return { min: 0, max: 1, p2: 0, p98: 1, count: 0, hist };
+  if (max === min) return { min, max, p2: min, p98: max, count, hist };
   const scale = (bins - 1) / (max - min);
   for (let i = 0; i < n; i += step) {
     const v = data[i];
@@ -103,13 +103,25 @@ function floatStats(data: Float32Array, nodata: number | null): FloatStats {
     }
     return max;
   };
-  return { min, max, p2: pct(0.02), p98: pct(0.98), count };
+  return { min, max, p2: pct(0.02), p98: pct(0.98), count, hist };
 }
 
 /**
  * Split "cog.tif#band=2&min=..&max=..&cmap=.." into the URL and its options.
  */
-export function splitCogUrl(url: string): { url: string; band?: number; min?: number; max?: number; cmap?: string; rgb?: boolean } {
+export interface CogUrlOptions {
+  url: string;
+  band?: number;
+  bands?: number[];      // rgb composite, 1-based
+  min?: number;
+  max?: number;
+  cmap?: string;
+  curve?: string;
+  nodata?: number;       // override
+  rgb?: boolean;         // force the 8-bit picture path
+}
+
+export function splitCogUrl(url: string): CogUrlOptions {
   const hash = url.indexOf('#');
   if (hash < 0) return { url };
   const frag = new URLSearchParams(url.slice(hash + 1));
@@ -117,12 +129,17 @@ export function splitCogUrl(url: string): { url: string; band?: number; min?: nu
     const v = frag.get(k);
     return v !== null && isFinite(parseFloat(v)) ? parseFloat(v) : undefined;
   };
+  const bandsStr = frag.get('bands');
+  const bands = bandsStr ? bandsStr.split(',').map(Number).filter(isFinite) : undefined;
   return {
     url: url.slice(0, hash),
     band: num('band'),
+    bands: bands && bands.length === 3 ? bands : undefined,
     min: num('min'),
     max: num('max'),
     cmap: frag.get('cmap') || undefined,
+    curve: frag.get('curve') || undefined,
+    nodata: num('nodata'),
     rgb: frag.get('rgb') === '1' || undefined
   };
 }
@@ -137,10 +154,15 @@ export class COGSource implements RasterSource {
   readonly samplesPerPixel: number;
   readonly bitsPerSample: number;
   readonly sampleFormat: number;      // 1 uint, 2 int, 3 float
-  readonly nodata: number | null;
+  /** nodata from the GDAL tag */
+  readonly fileNodata: number | null;
+  /** nodata in effect: an override, or the file's */
+  nodata: number | null;
   readonly numeric: boolean;
-  /** 0-based band read in numeric mode */
-  readonly band: number;
+  /** 0-based band read in single-band mode */
+  band: number;
+  /** 0-based bands for an rgb composite, or null for single band */
+  rgbBands: [number, number, number] | null = null;
 
   private constructor(
     private url: string,
@@ -161,6 +183,7 @@ export class COGSource implements RasterSource {
     this.samplesPerPixel = spp;
     this.bitsPerSample = bits;
     this.sampleFormat = fmt;
+    this.fileNodata = nodata;
     this.nodata = nodata;
     this.band = band;
     // Pictures are 8-bit with 3+ bands; everything else is data.
@@ -192,12 +215,18 @@ export class COGSource implements RasterSource {
     levels.sort((a, b) => a.resolution - b.resolution);
 
     const spp = image.getSamplesPerPixel();
-    const bits = image.getBitsPerSample()[0] || 8;
+    const bpsRaw = image.getBitsPerSample() as unknown;
+    const bits = (Array.isArray(bpsRaw) ? bpsRaw[0] : bpsRaw as number) || 8;
     const fmt = (image.getSampleFormat && image.getSampleFormat()) || 1;
     const nd = image.getGDALNoData();
     const nodata = nd === null || nd === undefined || !isFinite(nd) ? null : nd;
     const band = Math.max(0, Math.min(spp - 1, (opts.band || 1) - 1));
-    return new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb);
+    const src = new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb);
+    if (opts.bands && spp >= 3) {
+      src.rgbBands = opts.bands.map(b => Math.max(0, Math.min(spp - 1, b - 1))) as [number, number, number];
+    }
+    if (opts.nodata !== undefined) src.nodata = opts.nodata;
+    return src;
   }
 
   async fetch(level: number, region: SourceBounds, maxDim: number): Promise<TextureData> {
@@ -243,13 +272,15 @@ export class COGSource implements RasterSource {
     };
 
     if (this.numeric) {
-      opts.samples = [this.band];
-      console.log(`COG fetch level ${level} band ${this.band + 1} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
+      const samples = this.rgbBands ? this.rgbBands : [this.band];
+      opts.samples = samples;
+      console.log(`COG fetch level ${level} bands ${samples.map(b => b + 1).join(',')} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
       const rasters = await image.readRasters(opts as any);
       const raw = rasters as unknown as ArrayLike<number>;
       const data = raw instanceof Float32Array ? raw : Float32Array.from(raw as ArrayLike<number>);
       const stats = floatStats(data, this.nodata);
-      return { float: { data, width: outW, height: outH, nodata: this.nodata, stats }, bounds };
+      const channels = this.rgbBands ? 3 : 1;
+      return { float: { data, width: outW, height: outH, channels, nodata: this.nodata, stats }, bounds };
     }
 
     console.log(`COG fetch level ${level} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);

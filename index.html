@@ -131,11 +131,22 @@
         padding: 2px 0 2px 40px;
         font-size: 10px;
       }
-      .scale-row .legend {
+      .scale-row canvas.hist {
+        width: 200px;
+        height: 36px;
+        border: 1px solid #555;
+        cursor: ew-resize;
+        touch-action: none;
+      }
+      .scale-row .hist-legend {
         display: inline-block;
-        width: 60px;
-        height: 10px;
+        width: 200px;
+        height: 8px;
         border: 1px solid #666;
+      }
+      .scale-row label.wide {
+        width: auto;
+        color: #aaa;
       }
       #controls .scale-row input.num {
         width: 64px;
