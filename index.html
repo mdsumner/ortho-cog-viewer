@@ -29,7 +29,10 @@
         font-family: monospace;
         font-size: 12px;
         z-index: 100;
-        max-width: 420px;
+        max-width: 460px;
+        max-height: calc(100vh - 20px);
+        overflow-y: auto;
+        box-sizing: border-box;
         border-radius: 4px;
       }
       #controls input[type="text"] {
@@ -75,8 +78,21 @@
         margin-top: 8px;
         padding-top: 8px;
         border-top: 1px solid #444;
-        max-height: 150px;
-        overflow-y: auto;
+      }
+      .layer-item {
+        flex-wrap: wrap;
+      }
+      .alpha-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 1px 0 1px 40px;
+        font-size: 10px;
+        color: #aaa;
+      }
+      .alpha-row input[type="range"] {
+        width: 120px;
+        margin: 0;
       }
       .layer-item {
         display: flex;

@@ -87,6 +87,13 @@ interface Layer {
   /** numeric layers: colour scaling state */
   scale: ScaleState | null;
   stats: FloatStats | null;
+  opacity: number;
+}
+
+/** Parameters carried on a layer URL's fragment. */
+function fragmentParams(url: string): URLSearchParams {
+  const hash = url.indexOf('#');
+  return new URLSearchParams(hash >= 0 ? url.slice(hash + 1) : '');
 }
 
 type Curve = 'linear' | 'sqrt' | 'log';
@@ -452,8 +459,14 @@ async function addLayer(url: string): Promise<Layer | null> {
       needBBox: null,
       needPx: null,
       scale: null,
-      stats: null
+      stats: null,
+      opacity: 1
     };
+    const alpha = parseFloat(fragmentParams(url).get('alpha') || '');
+    if (isFinite(alpha)) {
+      layer.opacity = Math.max(0, Math.min(1, alpha));
+      renderer.setOpacity(layer.opacity);
+    }
     if (source.numeric) {
       const o = splitCogUrl(url);
       const cog = source as COGSource;
@@ -791,6 +804,10 @@ function updateUI(): void {
         <button data-fit="${layer.id}" title="Centre the view on this layer">fit</button>
         <span title="${layer.url}">${src.label}</span>
         <span>(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)</span>
+      </div>
+      <div class="alpha-row">
+        alpha <input type="range" min="0" max="1" step="0.02" value="${layer.opacity}" data-alpha="${layer.id}" />
+        <span data-alpha-val="${layer.id}">${Math.round(layer.opacity * 100)}%</span>
       </div>${scaleRow}${attr}
     `;
   }).join('');
@@ -950,9 +967,14 @@ async function changeBands(layer: Layer, mode: 'single' | 'rgb', bands: number[]
  * The layer URL with its current scaling encoded in the fragment.
  */
 function layerUrlWithState(layer: Layer): string {
-  if (!layer.scale) return layer.url;
   const base = splitCogUrl(layer.url);
-  const frag = new URLSearchParams();
+  const frag = fragmentParams(layer.url);
+  for (const k of ['band', 'bands', 'min', 'max', 'cmap', 'curve', 'nodata', 'alpha']) frag.delete(k);
+  if (layer.opacity < 1) frag.set('alpha', layer.opacity.toFixed(2));
+  if (!layer.scale) {
+    const q0 = frag.toString();
+    return q0 ? `${base.url}#${q0}` : base.url;
+  }
   const cog = layer.source as COGSource;
   const sc = layer.scale;
   if (sc.mode === 'rgb' && cog.rgbBands) {
@@ -1248,6 +1270,19 @@ async function main() {
       else applyScale(layer, { nodataAuto: true, nodata: null });
       updateUI();
     }
+  });
+  layersEl.addEventListener('input', (e) => {
+    const t = e.target as HTMLInputElement;
+    const id = t.getAttribute('data-alpha');
+    if (id === null) return;
+    const layer = layers.find(l => l.id === parseInt(id));
+    if (!layer) return;
+    layer.opacity = parseFloat(t.value);
+    layer.renderer.setOpacity(layer.opacity);
+    const lbl = layersEl.querySelector(`[data-alpha-val="${layer.id}"]`);
+    if (lbl) lbl.textContent = `${Math.round(layer.opacity * 100)}%`;
+    render(viewController.getState());
+    scheduleUrlUpdate();
   });
   layersEl.addEventListener('pointerdown', (e) => {
     const t = e.target as HTMLElement;
