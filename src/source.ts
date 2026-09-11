@@ -64,6 +64,38 @@ export interface FetchPlan {
   region: SourceBounds;
 }
 
+/**
+ * Parse the `#a=1&b=2` fragment of a layer URL.
+ *
+ * Not URLSearchParams: that decodes '+' as a space, which destroys any proj4
+ * string it is handed (`+proj=utm` becomes ` proj=utm`). Values are decoded
+ * with decodeURIComponent, so both a raw '+' and an escaped %2B survive.
+ */
+export function parseFragment(url: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const hash = url.indexOf('#');
+  if (hash < 0) return out;
+  for (const part of url.slice(hash + 1).split('&')) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    const k = eq < 0 ? part : part.slice(0, eq);
+    const v = eq < 0 ? '' : part.slice(eq + 1);
+    try {
+      out.set(decodeURIComponent(k), decodeURIComponent(v));
+    } catch {
+      out.set(k, v);   // tolerate a stray % in a hand-typed definition
+    }
+  }
+  return out;
+}
+
+/** Inverse of parseFragment; round-trips exactly. */
+export function formatFragment(params: Map<string, string>): string {
+  return Array.from(params.entries())
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+}
+
 export function intersect(a: SourceBounds, b: SourceBounds): SourceBounds {
   return {
     minX: Math.max(a.minX, b.minX),

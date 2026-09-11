@@ -16,18 +16,18 @@
 import { generateGridMesh, GridMesh } from './mesh';
 import { buildLayerGeometry, transformBounds, SourceBounds } from './uv';
 import { registerProjections } from './crs';
-import { RasterSource, planFetch, contains } from './source';
+import { RasterSource, planFetch, contains, parseFragment, formatFragment } from './source';
 import { COGSource, splitCogUrl } from './cogSource';
 import { COLORMAPS, colormapBytes, colormapCss, colormapRange, isColormapName } from './colormap';
 import { FloatStats } from './source';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './wmts';
-import { ensureCRS } from './crs';
+import { ensureCRS, resolveCRS, unknownCRSMessage } from './crs';
 import { MeshRenderer } from './MeshRenderer';
 import { LineRenderer } from './LineRenderer';
 import { buildGraticule } from './graticule';
 import { ViewController, ViewState } from './ViewController';
-import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './centred';
+import { CENTRED_PRESETS, centredCRS, hasPlaceholders, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './centred';
 import proj4 from 'proj4';
 
 registerProjections();
@@ -64,6 +64,13 @@ let centreLat = -35;
 let meshZoom = NaN;                   // zoom the current screen mesh was built for
 let meshCssW = 0;
 let meshCssH = 0;
+// Display-space point the centred mesh is built around: the origin for a
+// re-centring template (the projection follows the view), or the projected
+// view centre for a static CRS used in centred mode.
+let centredOriginX = 0;
+let centredOriginY = 0;
+let meshOriginX = NaN;
+let meshOriginY = NaN;
 
 // Layer state
 interface Layer {
@@ -91,9 +98,8 @@ interface Layer {
 }
 
 /** Parameters carried on a layer URL's fragment. */
-function fragmentParams(url: string): URLSearchParams {
-  const hash = url.indexOf('#');
-  return new URLSearchParams(hash >= 0 ? url.slice(hash + 1) : '');
+function fragmentParams(url: string): Map<string, string> {
+  return parseFragment(url);
 }
 
 type Curve = 'linear' | 'sqrt' | 'log';
@@ -158,6 +164,30 @@ function currentDisplayCRS(): string {
 }
 
 /**
+ * Where the centred-mode mesh is anchored in display space.
+ *
+ * A re-centring template keeps the projection's own origin under the screen
+ * centre, so the mesh sits around (0, 0). A static CRS (a template with no
+ * placeholders, e.g. a plain EPSG code) does not move, so the mesh has to
+ * follow the view centre instead: anchor it at the projected centre.
+ */
+function updateCentredOrigin(): void {
+  if (mode !== 'centred' || hasPlaceholders(resolveTemplate(centredProj))) {
+    centredOriginX = 0;
+    centredOriginY = 0;
+    return;
+  }
+  try {
+    const [x, y] = proj4('EPSG:4326', currentDisplayCRS()).forward([centreLon, centreLat]);
+    centredOriginX = isFinite(x) ? x : 0;
+    centredOriginY = isFinite(y) ? y : 0;
+  } catch {
+    centredOriginX = 0;
+    centredOriginY = 0;
+  }
+}
+
+/**
  * Rebuild the base mesh for the current mode.
  *
  * fixed:   the configured extent, gridSize x gridSize.
@@ -173,10 +203,14 @@ function regenerateMesh(state?: ViewState): void {
     const halfW = cssW / scale / 2;
     const halfH = cssH / scale / 2;
     const rows = Math.max(4, Math.round(gridSize * cssH / cssW));
-    baseMesh = generateGridMesh([-halfW, -halfH, halfW, halfH], gridSize, rows);
+    updateCentredOrigin();
+    const ox = centredOriginX, oy = centredOriginY;
+    baseMesh = generateGridMesh([ox - halfW, oy - halfH, ox + halfW, oy + halfH], gridSize, rows);
     meshZoom = zoom;
     meshCssW = cssW;
     meshCssH = cssH;
+    meshOriginX = ox;
+    meshOriginY = oy;
   } else {
     baseMesh = generateGridMesh(
       [meshExtent.minX, meshExtent.minY, meshExtent.maxX, meshExtent.maxY],
@@ -290,15 +324,18 @@ function handleViewChange(state: ViewState): void {
     // Consume any pan offset: the display point now at the screen centre
     // becomes the new projection centre, and the camera snaps back to origin.
     if (state.centerX !== 0 || state.centerY !== 0) {
-      const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat, state.centerX, state.centerY);
+      const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat,
+        centredOriginX + state.centerX, centredOriginY + state.centerY);
       if (next) {
         [centreLon, centreLat] = next;
       }
       viewController.setState({ centerX: 0, centerY: 0 });
       state = viewController.getState();
+      updateCentredOrigin();
       syncCentreInputs();
     }
-    if (state.zoom !== meshZoom || canvas.clientWidth !== meshCssW || canvas.clientHeight !== meshCssH) {
+    if (state.zoom !== meshZoom || canvas.clientWidth !== meshCssW || canvas.clientHeight !== meshCssH ||
+        centredOriginX !== meshOriginX || centredOriginY !== meshOriginY) {
       regenerateMesh(state);
     }
     updateAllLayerMeshes();
@@ -332,7 +369,7 @@ function readGridSize(): number | null {
   return n;
 }
 
-function applyDisplaySettings(): void {
+async function applyDisplaySettings(): Promise<void> {
   const newMode = modeSelect.value as Mode;
   const newGrid = readGridSize();
   if (newGrid === null) return;
@@ -349,10 +386,8 @@ function applyDisplaySettings(): void {
       return;
     }
     const [xmin, xmax, ymin, ymax] = parts;
-    try {
-      proj4(newCRS, 'EPSG:4326');
-    } catch (err) {
-      alert(`Unknown CRS: ${newCRS}\n${err}`);
+    if (!await resolveCRS(newCRS)) {
+      alert(unknownCRSMessage(newCRS));
       return;
     }
 
@@ -380,10 +415,11 @@ function applyDisplaySettings(): void {
       alert('Invalid centre');
       return;
     }
-    try {
-      proj4(centredCRS(resolveTemplate(proj), lon, lat), 'EPSG:4326');
-    } catch (err) {
-      alert(`Projection template failed to parse:\n${err}`);
+    // A template may be a plain CRS (no placeholders), including an EPSG code
+    // that needs resolving before proj4 can use it.
+    const instantiated = centredCRS(resolveTemplate(proj), lon, lat);
+    if (!await resolveCRS(instantiated)) {
+      alert(unknownCRSMessage(instantiated));
       return;
     }
 
@@ -392,6 +428,7 @@ function applyDisplaySettings(): void {
     gridSize = newGrid;
     centredProj = proj;
     [centreLon, centreLat] = normaliseLonLat(lon, lat);
+    updateCentredOrigin();
 
     const zoom = wasCentred ? viewController.getState().zoom : defaultCentredZoom();
     makeViewController({ centerX: 0, centerY: 0, zoom });
@@ -417,6 +454,7 @@ function fitLayer(layer: Layer): void {
     const [lon, lat] = toGeo.forward([(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2]);
     if (!isFinite(lon) || !isFinite(lat)) return;
     [centreLon, centreLat] = normaliseLonLat(lon, lat);
+    updateCentredOrigin();
     const crs = currentDisplayCRS();
     const tb = transformBounds(b, layer.source.crs, crs, 30);
     const w = Math.max(tb.maxX - tb.minX, tb.maxY - tb.minY);
@@ -708,12 +746,16 @@ function pickerSelectionUrl(): string {
 // ---------------------------------------------------------------------------
 
 function render(state: ViewState): void {
+  // In centred mode with a static CRS the mesh sits around the projected view
+  // centre rather than the origin; everywhere else centredOrigin is (0, 0).
+  const camX = state.centerX + centredOriginX;
+  const camY = state.centerY + centredOriginY;
   gl.clearColor(0.1, 0.1, 0.1, 1.0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   for (const layer of layers) {
     layer.renderer.renderWithViewport(
-      state.centerX,
-      state.centerY,
+      camX,
+      camY,
       state.zoom,
       canvas.clientWidth,
       canvas.clientHeight
@@ -721,15 +763,15 @@ function render(state: ViewState): void {
   }
   if (showGraticule) {
     updateGraticule();
-    gratMinor.render(state.centerX, state.centerY, state.zoom, [1, 1, 1, 0.25]);
-    gratMajor.render(state.centerX, state.centerY, state.zoom, [1, 1, 1, 0.6]);
+    gratMinor.render(camX, camY, state.zoom, [1, 1, 1, 0.25]);
+    gratMajor.render(camX, camY, state.zoom, [1, 1, 1, 0.6]);
   }
   if (showWireframe) {
     const colors: [number, number, number, number][] = [
       [1, 1, 0, 0.55], [0, 1, 1, 0.55], [1, 0.4, 1, 0.55], [0.5, 1, 0.5, 0.55]
     ];
     layers.forEach((layer, i) => {
-      layer.renderer.renderWireframe(state.centerX, state.centerY, state.zoom, colors[i % colors.length]);
+      layer.renderer.renderWireframe(camX, camY, state.zoom, colors[i % colors.length]);
     });
   }
   updateInfo(state);
@@ -1051,7 +1093,7 @@ function layerUrlWithState(layer: Layer): string {
   for (const k of ['band', 'bands', 'min', 'max', 'cmap', 'curve', 'nodata', 'alpha', 'shade', 'zf', 'az', 'alt']) frag.delete(k);
   if (layer.opacity < 1) frag.set('alpha', layer.opacity.toFixed(2));
   if (!layer.scale) {
-    const q0 = frag.toString();
+    const q0 = formatFragment(frag);
     return q0 ? `${base.url}#${q0}` : base.url;
   }
   const cog = layer.source as COGSource;
@@ -1074,7 +1116,7 @@ function layerUrlWithState(layer: Layer): string {
     if (sc.azimuth !== 315) frag.set('az', String(sc.azimuth));
     if (sc.altitude !== 45) frag.set('alt', String(sc.altitude));
   }
-  const q = frag.toString();
+  const q = formatFragment(frag);
   return q ? `${base.url}#${q}` : base.url;
 }
 
@@ -1264,6 +1306,14 @@ async function main() {
   const params = new URLSearchParams(location.search);
   applyUrlParams(params);
   const initial = initialViewFromParams(params);
+  // The display CRS may be an EPSG code from the URL (fixed mode, or a static
+  // template in centred mode), so resolve it before anything tries to use it.
+  const wantCRS = currentDisplayCRS();
+  if (!await resolveCRS(wantCRS)) {
+    alert(unknownCRSMessage(wantCRS));
+    if (mode === 'centred') centredProj = 'ortho';
+    else displayCRS = 'EPSG:3857';
+  }
   regenerateMesh(initial);
   makeViewController(initial);
   syncUI();

@@ -60,6 +60,15 @@ export const CENTRED_PRESETS: Record<string, CentredPreset> = {
   }
 };
 
+/**
+ * Does this template re-centre with the view? A template without {lon_0} or
+ * {lat_0} is an ordinary fixed CRS being used in centred mode: the projection
+ * stays put and only the mesh follows the view centre.
+ */
+export function hasPlaceholders(template: string): boolean {
+  return /\{lon_0\}|\{lat_0\}/.test(template);
+}
+
 export function isPresetName(s: string): boolean {
   return Object.prototype.hasOwnProperty.call(CENTRED_PRESETS, s);
 }
@@ -96,7 +105,9 @@ export function centredCRS(template: string, lon: number, lat: number): string {
 
 /**
  * Given a projection centred at (lon, lat), find the lon/lat of the point at
- * display offset (dx, dy) metres from the centre. This is how a screen pan
+ * display position (dx, dy). For a re-centring template that position is an
+ * offset from the tangent point; for a static one the caller passes absolute
+ * display coordinates, which works out the same way. This is how a screen pan
  * becomes a new centre: the point that was under the middle of the screen
  * after the drag becomes the tangent point of the next frame's projection.
  *

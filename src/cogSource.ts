@@ -5,9 +5,9 @@
  */
 
 import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
-import { RasterSource, SourceLevel, TextureData, FloatStats } from './source';
+import { RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
 import { SourceBounds } from './uv';
-import { ensureCRS } from './crs';
+import { resolveCRS, defineCRS, unknownCRSMessage } from './crs';
 
 // One open handle per URL; the promise is cached so concurrent opens share it.
 const tiffCache = new Map<string, Promise<GeoTIFF>>();
@@ -118,6 +118,7 @@ export interface CogUrlOptions {
   cmap?: string;
   curve?: string;
   nodata?: number;       // override
+  crs?: string;          // proj4 or WKT definition for the source CRS
   scale?: number;        // value = raw * scale + offset (defaults from GDAL metadata)
   offset?: number;
   shade?: number;        // hillshade strength 0..1 (presence turns it on)
@@ -130,10 +131,10 @@ export interface CogUrlOptions {
 export function splitCogUrl(url: string): CogUrlOptions {
   const hash = url.indexOf('#');
   if (hash < 0) return { url };
-  const frag = new URLSearchParams(url.slice(hash + 1));
+  const frag = parseFragment(url);
   const num = (k: string) => {
     const v = frag.get(k);
-    return v !== null && isFinite(parseFloat(v)) ? parseFloat(v) : undefined;
+    return v !== undefined && isFinite(parseFloat(v)) ? parseFloat(v) : undefined;
   };
   const bandsStr = frag.get('bands');
   const bands = bandsStr ? bandsStr.split(',').map(Number).filter(isFinite) : undefined;
@@ -146,6 +147,7 @@ export function splitCogUrl(url: string): CogUrlOptions {
     cmap: frag.get('cmap') || undefined,
     curve: frag.get('curve') || undefined,
     nodata: num('nodata'),
+    crs: frag.get('crs') || undefined,
     scale: num('scale'),
     offset: num('offset'),
     shade: num('shade'),
@@ -220,10 +222,15 @@ export class COGSource implements RasterSource {
     const url = opts.url;
     const tiff = await getTiff(url);
     const image = await tiff.getImage();
-    const crs = parseCRSFromGeoKeys(image.getGeoKeys());
-    if (!crs) throw new Error('COG has no CRS information');
-    if (!ensureCRS(crs)) {
-      throw new Error(`Source CRS ${crs} is not registered in crs.ts (UTM zones are synthesised; other EPSG codes need a def)`);
+    // The GeoKeys give a code; #crs= on the URL can supply the definition for
+    // it (or stand in entirely when the file has no usable code).
+    const crs = parseCRSFromGeoKeys(image.getGeoKeys()) || (opts.crs ? 'CUSTOM' : null);
+    if (!crs) throw new Error('COG has no CRS information, and no #crs= was given');
+    if (opts.crs && !defineCRS(crs, opts.crs)) {
+      throw new Error(`The #crs= definition for ${crs} could not be parsed by proj4`);
+    }
+    if (!await resolveCRS(crs)) {
+      throw new Error(unknownCRSMessage(crs));
     }
     const bbox = image.getBoundingBox();
     const bounds = { minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3] };

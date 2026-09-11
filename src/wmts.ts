@@ -9,7 +9,8 @@
  */
 
 import { SourceBounds, transformBounds } from './uv';
-import { ensureCRS } from './crs';
+import { parseFragment } from './source';
+import { ensureCRS, resolveCRS } from './crs';
 
 export interface TileMatrix {
   id: string;
@@ -301,7 +302,12 @@ export function fetchCapabilities(url: string): Promise<ParsedCapabilities> {
     p = (async () => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`GetCapabilities failed: HTTP ${res.status}`);
-      return parseCapabilities(await res.text());
+      const caps = parseCapabilities(await res.text());
+      // Resolve the matrix-set CRSs once, here, so the synchronous checks
+      // downstream (layer picker, selectWMTSSource) see them registered.
+      await Promise.all(Array.from(new Set(Array.from(caps.tms.values()).map(t => t.crs)))
+        .map(crs => resolveCRS(crs)));
+      return caps;
     })();
     capsCache.set(url, p);
     p.catch(() => capsCache.delete(url));
@@ -315,7 +321,7 @@ export function fetchCapabilities(url: string): Promise<ParsedCapabilities> {
 export function splitCapabilitiesUrl(url: string): { url: string; layer?: string; tms?: string; time?: string } {
   const hash = url.indexOf('#');
   if (hash < 0) return { url };
-  const frag = new URLSearchParams(url.slice(hash + 1));
+  const frag = parseFragment(url);
   return {
     url: url.slice(0, hash),
     layer: frag.get('layer') || undefined,
