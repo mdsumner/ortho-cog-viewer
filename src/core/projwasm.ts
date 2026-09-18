@@ -15,17 +15,26 @@
  */
 import type { DefinitionProvider } from './crs';
 
+interface CoordArray { buffer: Float64Array; numCoords: number; }
+
 interface ProjModule {
   init(opts?: Record<string, unknown>): Promise<unknown>;
   contextCreate(opts?: { network?: boolean }): Promise<unknown>;
   projCreate(opts: { context: unknown; definition: string }): Promise<unknown>;
+  projCreateCrsToCrs(opts: { context: unknown; source_crs: string; target_crs: string }): Promise<unknown>;
   projAsProjString(opts: { context: unknown; pj: unknown; type: number }): Promise<string>;
+  coordArray(n: number): Promise<CoordArray>;
+  projTransArray(opts: { p: unknown; direction: number; n: number; coord: CoordArray }): Promise<unknown>;
   PJ_PROJ_4: number;
+  PJ_FWD: number;
+  PJ_INV: number;
 }
 
 interface Engine {
   mod: ProjModule;
   ctx: unknown;
+  /** crs-to-crs transformers from lon/lat (CRS84) to a definition, by definition */
+  transformers: Map<string, Promise<unknown>>;
 }
 
 let engine: Promise<Engine> | null = null;
@@ -56,7 +65,65 @@ async function load(): Promise<Engine> {
   await mod.init({ bootstrap: base + 'worker-bootstrap.mjs', size: 1 });
   const ctx = await mod.contextCreate({ network: false });
   console.log(`PROJ (wasm) ready in ${Math.round(performance.now() - t0)} ms`);
-  return { mod, ctx };
+  return { mod, ctx, transformers: new Map() };
+}
+
+/** Is PROJ loaded (or loading)? Nothing here triggers the download. */
+export function projWasmStarted(): boolean {
+  return engine !== null;
+}
+
+async function ready(): Promise<Engine> {
+  if (!engine) engine = load();
+  return engine;
+}
+
+/**
+ * PROJ's own idea of a CRS for a definition string: a bare +proj string is
+ * an operation to proj_create_crs_to_crs unless it says +type=crs.
+ */
+function asCRS(def: string): string {
+  const d = def.trim();
+  return d.startsWith('+') && !/\+type=crs\b/.test(d) ? d + ' +type=crs' : d;
+}
+
+async function transformerFor(e: Engine, def: string): Promise<unknown> {
+  let t = e.transformers.get(def);
+  if (!t) {
+    t = e.mod.projCreateCrsToCrs({ context: e.ctx, source_crs: 'OGC:CRS84', target_crs: asCRS(def) });
+    e.transformers.set(def, t);
+  }
+  return t;
+}
+
+/**
+ * Transform a batch of points between lon/lat (degrees) and a CRS given by
+ * its definition string, in PROJ. xy is interleaved [x0, y0, x1, y1, ...]
+ * and the result has the same layout; points PROJ cannot transform come
+ * back NaN rather than throwing. One worker round trip for the whole batch.
+ */
+export async function projTransformBatch(def: string, xy: Float64Array, direction: 'fromGeo' | 'toGeo'): Promise<Float64Array> {
+  const e = await ready();
+  const n = xy.length / 2;
+  const out = new Float64Array(xy.length);
+  if (n === 0) return out;
+  const t = await transformerFor(e, def);
+  const ca = await e.mod.coordArray(n);
+  const b = ca.buffer;
+  for (let i = 0; i < n; i++) {
+    b[i * 4] = xy[i * 2];
+    b[i * 4 + 1] = xy[i * 2 + 1];
+    b[i * 4 + 2] = 0;
+    b[i * 4 + 3] = 0;
+  }
+  await e.mod.projTransArray({ p: t, direction: direction === 'fromGeo' ? e.mod.PJ_FWD : e.mod.PJ_INV, n, coord: ca });
+  for (let i = 0; i < n; i++) {
+    const x = b[i * 4], y = b[i * 4 + 1];
+    // PROJ marks failures with HUGE_VAL
+    out[i * 2] = Math.abs(x) > 1e300 ? NaN : x;
+    out[i * 2 + 1] = Math.abs(y) > 1e300 ? NaN : y;
+  }
+  return out;
 }
 
 /**
@@ -65,16 +132,11 @@ async function load(): Promise<Engine> {
  * download for every subsequent miss.
  */
 export const projWasmProvider: DefinitionProvider = async (code) => {
-  if (!engine) {
-    engine = load().catch((err) => {
-      console.warn('PROJ (wasm) could not be loaded; falling back to epsg.io:', err);
-      throw err;
-    });
-  }
   let e: Engine;
   try {
-    e = await engine;
-  } catch {
+    e = await ready();
+  } catch (err) {
+    console.warn('PROJ (wasm) could not be loaded; falling back to epsg.io:', err);
     return null;
   }
   try {

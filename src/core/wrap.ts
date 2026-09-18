@@ -27,8 +27,8 @@
  * formula past 180 degrees, which for a pseudocylindrical is a shear, not a
  * copy. This is the copy.
  */
-import proj4 from 'proj4';
 import { crsDefinition } from './crs';
+import { GeoTransform, geoTransform } from './transform';
 
 export interface WrapSpec {
   /** Translation between adjacent copies, display units. */
@@ -51,32 +51,25 @@ export function copyIndex(w: WrapSpec, x: number, y: number): number {
   return Math.round(((x - w.ax) * w.tx + (y - w.ay) * w.ty) / len2);
 }
 
-export function detectWrap(displayCRS: string): WrapSpec | null {
-  let fwd: { forward(p: number[]): number[] };
-  try {
-    fwd = proj4('EPSG:4326', displayCRS);
-  } catch {
-    return null;
-  }
-  const lon0 = centralMeridian(displayCRS);
+const PHIS = [0, -80, -70, -60, -50, -40, -30, -20, -10, 10, 20, 30, 40, 50, 60, 70, 80];
+
+/** The lon/lat probe points: (lon_0, 0), then the two edges at each latitude. */
+function probes(lon0: number): Float64Array {
   const eps = 1e-7;
-  const across = (phi: number): [number, number] | null => {
-    try {
-      const a = fwd.forward([lon0 - 180 + eps, phi]);
-      const b = fwd.forward([lon0 + 180 - eps, phi]);
-      const t: [number, number] = [b[0] - a[0], b[1] - a[1]];
-      return isFinite(t[0]) && isFinite(t[1]) ? t : null;
-    } catch {
-      return null;
-    }
+  const pts: number[] = [lon0, 0];
+  for (const phi of PHIS) pts.push(lon0 - 180 + eps, phi, lon0 + 180 - eps, phi);
+  return Float64Array.from(pts);
+}
+
+/** Decide from the projected probes. */
+function decide(xy: Float64Array): WrapSpec | null {
+  const ax = xy[0], ay = xy[1];
+  if (!isFinite(ax) || !isFinite(ay)) return null;
+  const across = (i: number): [number, number] | null => {
+    const o = 2 + i * 4;
+    const t: [number, number] = [xy[o + 2] - xy[o], xy[o + 3] - xy[o + 1]];
+    return isFinite(t[0]) && isFinite(t[1]) ? t : null;
   };
-  let anchor: number[];
-  try {
-    anchor = fwd.forward([lon0, 0]);
-    if (!isFinite(anchor[0]) || !isFinite(anchor[1])) return null;
-  } catch {
-    return null;
-  }
   const t0 = across(0);
   if (!t0) return null;
   const len0 = Math.hypot(t0[0], t0[1]);
@@ -84,8 +77,8 @@ export function detectWrap(displayCRS: string): WrapSpec | null {
   // smaller is two edges landing on (nearly) the same point.
   if (!(len0 > 1e-3 * 6.378e6)) return null;
 
-  for (let phi = -80; phi <= 80; phi += 10) {
-    const t = across(phi);
+  for (let i = 1; i < PHIS.length; i++) {
+    const t = across(i);
     if (!t) return null;
     const len = Math.hypot(t[0], t[1]);
     if (len === 0) continue;                       // a pole-like pinch is fine
@@ -94,5 +87,25 @@ export function detectWrap(displayCRS: string): WrapSpec | null {
     const dot = t0[0] * t[0] + t0[1] * t[1];
     if (Math.abs(cross) > 1e-6 * len0 * len || dot <= 0) return null;
   }
-  return { tx: t0[0], ty: t0[1], ax: anchor[0], ay: anchor[1] };
+  return { tx: t0[0], ty: t0[1], ax, ay };
+}
+
+/** Synchronous: the display CRS must be one proj4js executes. */
+export function detectWrap(displayCRS: string): WrapSpec | null {
+  const geo = geoTransform(displayCRS);
+  if (!geo.fromGeoSync) throw new Error(`${displayCRS} needs the PROJ executor; use detectWrapAsync`);
+  try {
+    return decide(geo.fromGeoSync(probes(centralMeridian(displayCRS))));
+  } catch {
+    return null;
+  }
+}
+
+/** Any executor: one batch. */
+export async function detectWrapAsync(geo: GeoTransform): Promise<WrapSpec | null> {
+  try {
+    return decide(await geo.fromGeo(probes(centralMeridian(geo.crs))));
+  } catch {
+    return null;
+  }
 }

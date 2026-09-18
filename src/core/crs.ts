@@ -183,6 +183,7 @@ export function defineCRS(code: string, def: string): boolean {
  */
 export function ensureCRS(crs: string): boolean {
   if (!crs) return false;
+  if (isProjOnly(crs)) return true;
   if (!proj4.defs(crs)) {
     const syn = synthesiseCRS(crs);
     if (syn) {
@@ -244,8 +245,15 @@ export async function resolveCRS(crs: string): Promise<boolean> {
               console.log(`Resolved ${describe(key)} through the definition provider`);
               return true;
             }
-            failures.set(key, executorFailure(def));
-            return false;
+            // PROJ understands it and proj4js cannot run it: usable, but
+            // only through PROJ. Record the definition so crsDefinition()
+            // still hands it out, and remember who has to execute it.
+            definitions.set(key, def);
+            projOnly.add(key);
+            const name = projName(def);
+            if (name) projOnlyProjs.add(name);
+            console.log(`${describe(key)} is executable by PROJ only (${executorFailure(def)})`);
+            return true;
           }
         } catch (err) {
           console.warn(`Definition provider failed for ${describe(key)}:`, err);
@@ -274,8 +282,39 @@ export async function resolveCRS(crs: string): Promise<boolean> {
 }
 
 // Why the last attempt at a CRS failed, when the reason is more useful than
-// "unknown": PROJ understood it, proj4js could not execute the result.
+// "unknown".
 const failures = new Map<string, string>();
+
+// CRSs that PROJ resolved but proj4js cannot execute. They work as a display
+// CRS through the PROJ executor (a worker round trip per batch of points).
+// The projection names behind them are kept too, so a centred template
+// that re-instantiates "+proj=aitoff +lon_0=<new>" every pan is recognised
+// without a round trip to PROJ each time.
+const projOnly = new Set<string>();
+const projOnlyProjs = new Set<string>();
+
+function projName(def: string): string | null {
+  const m = /\+proj=([^\s]+)/.exec(def);
+  return m ? m[1] : null;
+}
+
+function isProjOnly(crs: string): boolean {
+  const t = crs.trim();
+  if (projOnly.has(t)) return true;
+  const name = t.startsWith('+') ? projName(t) : null;
+  return name !== null && projOnlyProjs.has(name);
+}
+
+export type Executor = 'proj4js' | 'proj';
+
+/**
+ * Who runs the maths for this CRS: proj4js, synchronously, whenever it can;
+ * otherwise PROJ in wasm, batched and asynchronous. This is the seam a user
+ * feels as "instant" versus "a frame behind".
+ */
+export function executorFor(crs: string): Executor {
+  return isProjOnly(crs) ? 'proj' : 'proj4js';
+}
 
 function describe(crs: string): string {
   return crs.length > 60 ? crs.slice(0, 57) + '...' : crs;
@@ -283,11 +322,7 @@ function describe(crs: string): string {
 
 function executorFailure(def: string): string {
   const m = /\+proj=([^\s]+)/.exec(def);
-  return m
-    ? `PROJ understands it (${describe(def)}) but proj4js cannot execute ` +
-      `+proj=${m[1]}. The projections proj4js runs are its own couple of ` +
-      `dozen plus eck4, natearth, hammer, wintri and igh added here.`
-    : `PROJ understands it but could not express it as a proj4 string proj4js accepts.`;
+  return m ? `proj4js cannot execute +proj=${m[1]}` : `proj4js does not accept the proj string`;
 }
 
 /**

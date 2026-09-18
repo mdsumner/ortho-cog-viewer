@@ -18,8 +18,7 @@
  */
 
 import { generateGridMesh, GridMesh } from './engine/mesh';
-import { transformBounds } from './core/bounds';
-import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider } from './core/crs';
+import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider, executorFor } from './core/crs';
 import { projWasmProvider } from './core/projwasm';
 import { RasterSource, parseFragment, formatFragment } from './core/source';
 import { COGSource, splitCogUrl } from './core/cogSource';
@@ -27,10 +26,12 @@ import { COLORMAPS, colormapCss, colormapRange, isColormapName } from './core/co
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './core/xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './core/wmts';
 import { LineRenderer } from './engine/LineRenderer';
-import { buildGraticule } from './core/graticule';
-import { WrapSpec, detectWrap, copyIndex } from './core/wrap';
+import { buildGraticule, buildGraticuleAsync } from './core/graticule';
+import { geoTransform } from './core/transform';
+import { transformBounds, boundsToDisplayAsync, SourceBounds } from './core/bounds';
+import { WrapSpec, detectWrap, detectWrapAsync, copyIndex } from './core/wrap';
 import { ViewController, ViewState } from './ViewController';
-import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './core/centred';
+import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, panCentreAsync, resolveTemplate, normaliseLonLat } from './core/centred';
 import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
 import { MeshEngine } from './engine/meshEngine';
 import proj4 from 'proj4';
@@ -57,6 +58,8 @@ let wrapSpec: WrapSpec | null = null;
 let wrapCRS = '';              // display CRS wrapSpec was detected for
 let showGraticule = true;
 let graticuleCRS = '';        // display CRS the current graticule was built for
+let graticuleInFlight = false;
+let graticuleQueued = false;
 
 // fixed mode
 let displayCRS = 'EPSG:3857';
@@ -168,10 +171,28 @@ function updateCentredOrigin(): void {
     centredOriginY = 0;
     return;
   }
+  const geo = geoTransform(currentDisplayCRS());
+  if (!geo.fromGeoSync) {
+    // PROJ executor: the origin arrives later; until then keep the last one.
+    // (A template with both placeholders projects its centre to (0, 0)
+    // anyway, which is the common case, so the wait rarely shows.)
+    void geo.fromGeo(new Float64Array([centreLon, centreLat])).then((xy) => {
+      const x = isFinite(xy[0]) ? xy[0] : 0, y = isFinite(xy[1]) ? xy[1] : 0;
+      const nx = x + lookOffsetX, ny = y + lookOffsetY;
+      if (nx === centredOriginX && ny === centredOriginY) return;
+      centredOriginX = nx;
+      centredOriginY = ny;
+      regenerateMesh();
+      layoutAllLayers();
+      render(viewController.getState());
+    });
+    return;
+  }
   let x = 0, y = 0;
   try {
-    [x, y] = proj4('EPSG:4326', currentDisplayCRS()).forward([centreLon, centreLat]);
-    if (!isFinite(x) || !isFinite(y)) { x = 0; y = 0; }
+    const xy = geo.fromGeoSync(new Float64Array([centreLon, centreLat]));
+    x = isFinite(xy[0]) ? xy[0] : 0;
+    y = isFinite(xy[1]) ? xy[1] : 0;
   } catch {
     x = 0; y = 0;
   }
@@ -199,8 +220,20 @@ function currentWrap(): WrapSpec | null {
   if (!wrapWorld) return null;
   const crs = currentDisplayCRS();
   if (crs !== wrapCRS) {
-    wrapSpec = detectWrap(crs);
     wrapCRS = crs;
+    const geo = geoTransform(crs);
+    if (geo.fromGeoSync) {
+      wrapSpec = detectWrap(crs);
+    } else {
+      // PROJ executor: keep the previous answer until the new one lands.
+      void detectWrapAsync(geo).then((w) => {
+        if (wrapCRS !== crs) return;
+        wrapSpec = w;
+        graticuleCRS = '';
+        layoutAllLayers();
+        render(viewController.getState());
+      });
+    }
   }
   return wrapSpec;
 }
@@ -244,6 +277,10 @@ function onEngineChange(layer: Layer): void {
   }
   updateUI();
   render(viewController.getState());
+  // A layout that landed late (the PROJ executor) may have changed what
+  // the view needs from the source; the refresh is debounced, so this is
+  // cheap when nothing did.
+  scheduleRefresh(viewController.getState());
 }
 
 /**
@@ -301,10 +338,34 @@ function updateGraticule(): void {
   const [kMin, kMax] = w ? copyRange(w, viewController.getState()) : [0, 0];
   const key = `${crs}|${kMin},${kMax}`;
   if (key === graticuleCRS) return;
-  const g = buildGraticule(crs, { stepDeg: 10, sampleDeg: 1, tolerance: meshCellSize() * 1e-2, wrap: w, kMin, kMax });
-  gratMinor.setLines(g.minor);
-  gratMajor.setLines(g.major);
+  const opts = { stepDeg: 10, sampleDeg: 1, tolerance: meshCellSize() * 1e-2, wrap: w, kMin, kMax };
+  const geo = geoTransform(crs);
+  if (geo.fromGeoSync) {
+    const g = buildGraticule(crs, opts);
+    gratMinor.setLines(g.minor);
+    gratMajor.setLines(g.major);
+    graticuleCRS = key;
+    return;
+  }
+  // PROJ executor: one build in flight; the newest request wins when it
+  // lands. The old lines stay up until then.
   graticuleCRS = key;
+  if (graticuleInFlight) { graticuleQueued = true; return; }
+  graticuleInFlight = true;
+  buildGraticuleAsync(geo, opts).then((g) => {
+    if (graticuleCRS === key) {
+      gratMinor.setLines(g.minor);
+      gratMajor.setLines(g.major);
+      render(viewController.getState());
+    }
+  }).catch((err) => console.warn('graticule (PROJ) failed:', err)).finally(() => {
+    graticuleInFlight = false;
+    if (graticuleQueued) {
+      graticuleQueued = false;
+      graticuleCRS = '';
+      updateGraticule();
+    }
+  });
 }
 
 function layoutAllLayers(): void {
@@ -339,6 +400,11 @@ function onViewChange(state: ViewState): void {
 
 function handleViewChange(state: ViewState): void {
   if (mode === 'centred') {
+    if (executorFor(currentDisplayCRS()) === 'proj' && !state.shift &&
+        (state.centerX !== 0 || state.centerY !== 0)) {
+      handleViewChangeProj(state);
+      return;
+    }
     // Consume any pan offset: the display point now at the screen centre
     // becomes the new projection centre, and the camera snaps back to origin.
     if (state.centerX !== 0 || state.centerY !== 0) {
@@ -369,6 +435,49 @@ function handleViewChange(state: ViewState): void {
   render(state);
   scheduleRefresh(state);
   scheduleUrlUpdate();
+}
+
+/**
+ * The PROJ executor's pan. The inverse of the screen centre is a worker
+ * round trip, so the camera keeps its offset over the existing mesh (the
+ * view moves at once, the projection catches up), and when the new centre
+ * lands the consumed offset is subtracted from whatever the camera has
+ * accumulated since. One request at a time; a drag settles on the last
+ * position.
+ */
+let panInFlight = false;
+
+function handleViewChangeProj(state: ViewState): void {
+  render(state);
+  scheduleRefresh(state);
+  scheduleUrlUpdate();
+  if (panInFlight) return;
+  panInFlight = true;
+  const dx = state.centerX, dy = state.centerY;
+  const template = resolveTemplate(centredProj);
+  panCentreAsync(template, centreLon, centreLat, centredOriginX + dx, centredOriginY + dy)
+    .then(async (next) => {
+      if (next) [centreLon, centreLat] = next;
+      lookOffsetX = 0;
+      lookOffsetY = 0;
+      // The origin for the new centre, then take the consumed pan off the camera.
+      const geo = geoTransform(currentDisplayCRS());
+      const xy = await geo.fromGeo(new Float64Array([centreLon, centreLat]));
+      centredOriginX = isFinite(xy[0]) ? xy[0] : 0;
+      centredOriginY = isFinite(xy[1]) ? xy[1] : 0;
+      const s = viewController.getState();
+      viewController.setState({ centerX: s.centerX - dx, centerY: s.centerY - dy });
+      syncCentreInputs();
+      regenerateMesh(viewController.getState());
+      layoutAllLayers();
+      render(viewController.getState());
+    })
+    .catch((err) => console.warn('pan (PROJ) failed:', err))
+    .finally(() => {
+      panInFlight = false;
+      const s = viewController.getState();
+      if (s.centerX !== 0 || s.centerY !== 0) handleViewChangeProj(s);
+    });
 }
 
 function makeViewController(initial: ViewState): void {
@@ -482,16 +591,22 @@ function fitLayer(layer: Layer): void {
     [centreLon, centreLat] = normaliseLonLat(lon, lat);
     updateCentredOrigin();
     const crs = currentDisplayCRS();
-    const tb = transformBounds(b, layer.source.crs, crs, 30);
-    const w = Math.max(tb.maxX - tb.minX, tb.maxY - tb.minY);
-    const zoom = isFinite(w) && w > 0
-      ? Math.log2(Math.min(canvas.clientWidth, canvas.clientHeight) / (w * 1.1))
-      : defaultCentredZoom();
-    makeViewController({ centerX: 0, centerY: 0, zoom });
-    syncCentreInputs();
+    const geo = geoTransform(crs);
+    const apply = (tb: SourceBounds) => {
+      const w = Math.max(tb.maxX - tb.minX, tb.maxY - tb.minY);
+      const zoom = isFinite(w) && w > 0
+        ? Math.log2(Math.min(canvas.clientWidth, canvas.clientHeight) / (w * 1.1))
+        : defaultCentredZoom();
+      makeViewController({ centerX: 0, centerY: 0, zoom });
+      syncCentreInputs();
+    };
+    if (geo.fromGeoSync) apply(transformBounds(b, layer.source.crs, crs, 30));
+    else void boundsToDisplayAsync(b, layer.source.crs, geo).then(apply);
   } else {
-    const tb = transformBounds(layer.source.bounds, layer.source.crs, displayCRS, 30);
-    viewController.fitBounds(tb.minX, tb.minY, tb.maxX, tb.maxY);
+    const geo = geoTransform(displayCRS);
+    const apply = (tb: SourceBounds) => viewController.fitBounds(tb.minX, tb.minY, tb.maxX, tb.maxY);
+    if (geo.fromGeoSync) apply(transformBounds(layer.source.bounds, layer.source.crs, displayCRS, 30));
+    else void boundsToDisplayAsync(layer.source.bounds, layer.source.crs, geo).then(apply);
   }
 }
 
@@ -725,6 +840,7 @@ function updateInfo(state: ViewState): void {
   const lines = [
     `Mode: ${mode}`,
     `Display: <span class="crs-string" title="${crs}">${crs}</span>`,
+    `Executor: ${executorFor(crs) === 'proj' ? 'PROJ (wasm), a frame behind' : 'proj4js'}`,
     `Zoom: ${state.zoom.toFixed(2)} (${formatRes(metresPerPx)}/px)`,
   ];
   if (mode === 'centred') {

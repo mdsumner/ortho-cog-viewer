@@ -10,8 +10,10 @@
  */
 
 import { MeshRenderer } from './MeshRenderer';
-import { buildLayerGeometry } from './uv';
-import { LayerEngine, RenderContext, Style, EngineStatus } from './types';
+import { buildLayerGeometry, buildLayerGeometryAsync, LayerGeometry } from './uv';
+import { GeoTransform, geoTransform } from '../core/transform';
+import { Executor } from '../core/crs';
+import { LayerEngine, RenderContext, Style, EngineStatus, View } from './types';
 import { SourceBounds } from '../core/bounds';
 import { RasterSource, FloatStats, planFetch, contains } from '../core/source';
 import { colormapBytes } from '../core/colormap';
@@ -38,6 +40,10 @@ export class MeshEngine implements LayerEngine {
   /** what the last layout() said the view needs from the source */
   private needBBox: SourceBounds | null = null;
   private needPx: { w: number; h: number } | null = null;
+  private executor: Executor = 'proj4js';
+  private layoutInFlight = false;
+  private layoutQueued: RenderContext | null = null;
+  private disposed = false;
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -75,6 +81,12 @@ export class MeshEngine implements LayerEngine {
 
   layout(ctx: RenderContext): void {
     const { view, grid } = ctx;
+    const geo = geoTransform(view.crs);
+    this.executor = geo.executor;
+    if (geo.executor === 'proj') {
+      this.layoutAsync(ctx, geo);
+      return;
+    }
     const wrapU = this.textureWrapsU();
     // Round-trip tolerance: a small fraction of one mesh cell.
     const cell = Math.abs(grid.positions[3] - grid.positions[0]) || 1;
@@ -88,6 +100,41 @@ export class MeshEngine implements LayerEngine {
       wrapU,
       ctx.wrap
     );
+    this.applyGeometry(geom, view, wrapU);
+  }
+
+  /**
+   * The PROJ executor: the display transforms are a worker round trip, so
+   * the mesh for this view arrives a few milliseconds later and the shell
+   * is told to draw again. Only one layout runs at a time; a view change
+   * during the wait is kept and laid out once the current one lands, so a
+   * fast drag settles on the last position rather than every position.
+   */
+  private layoutAsync(ctx: RenderContext, geo: GeoTransform): void {
+    if (this.layoutInFlight) {
+      this.layoutQueued = ctx;
+      return;
+    }
+    const { view, grid } = ctx;
+    const wrapU = this.textureWrapsU();
+    const cell = Math.abs(grid.positions[3] - grid.positions[0]) || 1;
+    this.layoutInFlight = true;
+    buildLayerGeometryAsync(grid.positions, grid.indices, geo, this.source.crs, this.texBounds, cell * 1e-2, wrapU, ctx.wrap)
+      .then((geom) => {
+        if (this.disposed) return;
+        this.applyGeometry(geom, view, wrapU);
+        this.onChange();
+      })
+      .catch((err) => console.warn('PROJ layout failed:', err))
+      .finally(() => {
+        this.layoutInFlight = false;
+        const next = this.layoutQueued;
+        this.layoutQueued = null;
+        if (next) this.layout(next);
+      });
+  }
+
+  private applyGeometry(geom: LayerGeometry, view: View, wrapU: boolean): void {
     this.validFraction = geom.validFraction;
     this.needBBox = geom.sourceBBox;
     if (geom.displayBBox) {
@@ -105,6 +152,11 @@ export class MeshEngine implements LayerEngine {
       texCoords: geom.texCoords,
       indices: geom.indices
     });
+  }
+
+  /** Who ran the display transforms for the last layout. */
+  get executorName(): Executor {
+    return this.executor;
   }
 
   async refresh(ctx: RenderContext): Promise<void> {
@@ -189,6 +241,7 @@ export class MeshEngine implements LayerEngine {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.renderer.dispose();
   }
 }

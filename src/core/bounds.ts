@@ -6,6 +6,7 @@
  */
 
 import proj4 from 'proj4';
+import { GeoTransform } from './transform';
 
 export interface SourceBounds {
   minX: number;
@@ -63,4 +64,41 @@ export function transformBounds(
   }
 
   return { minX: outMinX, minY: outMinY, maxX: outMaxX, maxY: outMaxY };
+}
+
+/**
+ * Bounds in a source CRS (which proj4js executes) to display space through
+ * any executor: sampled to lon/lat with proj4js, then one batch through the
+ * display transform. Not clamped; NaN samples are ignored.
+ */
+export async function boundsToDisplayAsync(
+  bounds: SourceBounds,
+  fromCRS: string,
+  geo: GeoTransform,
+  samples: number = 20
+): Promise<SourceBounds> {
+  const toGeo = proj4(fromCRS, 'EPSG:4326');
+  const { minX, minY, maxX, maxY } = bounds;
+  const ll: number[] = [];
+  for (let i = 0; i <= samples; i++) {
+    for (let j = 0; j <= samples; j++) {
+      try {
+        const [lon, lat] = toGeo.forward([minX + (i / samples) * (maxX - minX), minY + (j / samples) * (maxY - minY)]);
+        if (isFinite(lon) && isFinite(lat)) ll.push(lon, lat);
+      } catch {
+        // skip
+      }
+    }
+  }
+  const xy = await geo.fromGeo(Float64Array.from(ll));
+  let oMinX = Infinity, oMinY = Infinity, oMaxX = -Infinity, oMaxY = -Infinity;
+  for (let i = 0; i < xy.length; i += 2) {
+    const x = xy[i], y = xy[i + 1];
+    if (!isFinite(x) || !isFinite(y)) continue;
+    if (x < oMinX) oMinX = x;
+    if (x > oMaxX) oMaxX = x;
+    if (y < oMinY) oMinY = y;
+    if (y > oMaxY) oMaxY = y;
+  }
+  return { minX: oMinX, minY: oMinY, maxX: oMaxX, maxY: oMaxY };
 }

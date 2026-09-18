@@ -11,6 +11,7 @@
 import proj4 from 'proj4';
 import { SourceBounds } from '../core/bounds';
 import { WrapSpec, copyIndex } from '../core/wrap';
+import { GeoTransform, geoTransform } from '../core/transform';
 
 
 export interface MaskedTextureCoords {
@@ -33,6 +34,10 @@ export interface MaskedTextureCoords {
  * azimuthal projection (proj4 clamps the inverse to the rim), past the poles
  * of Mercator, the antipode of an aeqd, NaN/undefined from the transform, etc.
  *
+ * The display-side transforms go through a GeoTransform, so the executor
+ * may be proj4js (synchronous, this function) or PROJ in wasm (batched in
+ * a worker, the Async variant). The source side is always proj4js.
+ *
  * @param tolerance Max round-trip error, in display CRS units. Something like
  *                  a small fraction of a mesh cell is a good choice.
  */
@@ -44,15 +49,65 @@ export function computeTextureCoordsMasked(
   tolerance: number,
   wrap: WrapSpec | null = null
 ): MaskedTextureCoords {
+  const geo = geoTransform(displayCRS);
+  if (!geo.toGeoSync || !geo.fromGeoSync) {
+    throw new Error(`${displayCRS} needs the PROJ executor; use computeTextureCoordsMaskedAsync`);
+  }
+  const reduced = reduceIntoBaseCopy(positions, wrap);
+  const lonlat = geo.toGeoSync(reduced);
+  const back = geo.fromGeoSync(lonlat);
+  return finishTextureCoords(positions, reduced, lonlat, back, sourceCRS, sourceBounds, tolerance);
+}
+
+export async function computeTextureCoordsMaskedAsync(
+  positions: Float32Array,
+  geo: GeoTransform,
+  sourceCRS: string,
+  sourceBounds: SourceBounds,
+  tolerance: number,
+  wrap: WrapSpec | null = null
+): Promise<MaskedTextureCoords> {
+  const reduced = reduceIntoBaseCopy(positions, wrap);
+  const lonlat = await geo.toGeo(reduced);
+  const back = await geo.fromGeo(lonlat);
+  return finishTextureCoords(positions, reduced, lonlat, back, sourceCRS, sourceBounds, tolerance);
+}
+
+/** Display xy pairs, each moved into the base copy of the world if wrapping. */
+function reduceIntoBaseCopy(positions: Float32Array, wrap: WrapSpec | null): Float64Array {
+  const n = positions.length / 3;
+  const out = new Float64Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    let dx = positions[i * 3], dy = positions[i * 3 + 1];
+    if (wrap) {
+      // A point in a gap between copies fails the round trip later just as
+      // a point off the globe does.
+      const k = copyIndex(wrap, dx, dy);
+      dx -= k * wrap.tx;
+      dy -= k * wrap.ty;
+    }
+    out[i * 2] = dx;
+    out[i * 2 + 1] = dy;
+  }
+  return out;
+}
+
+/** The part after the display-side transforms: validity, UVs, bboxes. */
+function finishTextureCoords(
+  positions: Float32Array,
+  reduced: Float64Array,
+  lonlat: Float64Array,
+  back: Float64Array,
+  sourceCRS: string,
+  sourceBounds: SourceBounds,
+  tolerance: number
+): MaskedTextureCoords {
   const numVertices = positions.length / 3;
   const texCoords = new Float32Array(numVertices * 2);
   const valid = new Uint8Array(numVertices);
   let validCount = 0;
 
-  const displayToGeo = proj4(displayCRS, 'EPSG:4326');
-  const geoToDisplay = proj4('EPSG:4326', displayCRS);
   const geoToSource = proj4('EPSG:4326', sourceCRS);
-
   const { minX, minY, maxX, maxY } = sourceBounds;
   const sourceWidth = maxX - minX;
   const sourceHeight = maxY - minY;
@@ -62,24 +117,14 @@ export function computeTextureCoordsMasked(
   let dMinX = Infinity, dMinY = Infinity, dMaxX = -Infinity, dMaxY = -Infinity;
 
   for (let i = 0; i < numVertices; i++) {
-    let dx = positions[i * 3 + 0];
-    let dy = positions[i * 3 + 1];
-    if (wrap) {
-      // Reduce into the base copy; a point in a gap between copies fails
-      // the round trip below just as a point off the globe does.
-      const k = copyIndex(wrap, dx, dy);
-      dx -= k * wrap.tx;
-      dy -= k * wrap.ty;
-    }
-
+    const dx = reduced[i * 2], dy = reduced[i * 2 + 1];
+    const lon = lonlat[i * 2], lat = lonlat[i * 2 + 1];
     let ok = false;
     let u = -1, v = -1;
-    try {
-      const [lon, lat] = displayToGeo.forward([dx, dy]);
-      if (isFinite(lon) && isFinite(lat)) {
-        const [bx, by] = geoToDisplay.forward([lon, lat]);
-        const ex = bx - dx, ey = by - dy;
-        if (isFinite(ex) && isFinite(ey) && ex * ex + ey * ey <= tol2) {
+    if (isFinite(lon) && isFinite(lat)) {
+      const ex = back[i * 2] - dx, ey = back[i * 2 + 1] - dy;
+      if (isFinite(ex) && isFinite(ey) && ex * ex + ey * ey <= tol2) {
+        try {
           const [sx, sy] = geoToSource.forward([lon, lat]);
           if (isFinite(sx) && isFinite(sy)) {
             u = (sx - minX) / sourceWidth;
@@ -89,17 +134,18 @@ export function computeTextureCoordsMasked(
             if (sx > sMaxX) sMaxX = sx;
             if (sy < sMinY) sMinY = sy;
             if (sy > sMaxY) sMaxY = sy;
-            if (dx < dMinX) dMinX = dx;
-            if (dx > dMaxX) dMaxX = dx;
-            if (dy < dMinY) dMinY = dy;
-            if (dy > dMaxY) dMaxY = dy;
+            // display bbox in the vertex's own (unreduced) position
+            const px = positions[i * 3], py = positions[i * 3 + 1];
+            if (px < dMinX) dMinX = px;
+            if (px > dMaxX) dMaxX = px;
+            if (py < dMinY) dMinY = py;
+            if (py > dMaxY) dMaxY = py;
           }
+        } catch {
+          ok = false;
         }
       }
-    } catch {
-      ok = false;
     }
-
     texCoords[i * 2 + 0] = u;
     texCoords[i * 2 + 1] = v;
     if (ok) {
@@ -172,6 +218,30 @@ export function buildLayerGeometry(
   wrap: WrapSpec | null = null
 ): LayerGeometry {
   const masked = computeTextureCoordsMasked(positions, displayCRS, sourceCRS, sourceBounds, tolerance, wrap);
+  return assembleLayerGeometry(positions, indices, masked, wrapU);
+}
+
+/** The same, with the display transforms run by any executor. */
+export async function buildLayerGeometryAsync(
+  positions: Float32Array,
+  indices: Uint32Array,
+  geo: GeoTransform,
+  sourceCRS: string,
+  sourceBounds: SourceBounds,
+  tolerance: number,
+  wrapU: boolean,
+  wrap: WrapSpec | null = null
+): Promise<LayerGeometry> {
+  const masked = await computeTextureCoordsMaskedAsync(positions, geo, sourceCRS, sourceBounds, tolerance, wrap);
+  return assembleLayerGeometry(positions, indices, masked, wrapU);
+}
+
+function assembleLayerGeometry(
+  positions: Float32Array,
+  indices: Uint32Array,
+  masked: MaskedTextureCoords,
+  wrapU: boolean
+): LayerGeometry {
   const { texCoords: uv, valid } = masked;
 
   const maxTris = indices.length / 3;

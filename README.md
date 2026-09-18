@@ -203,11 +203,31 @@ be used. `crs.ts` resolves one in four steps:
 Step 3 is not only for codes. Anything PROJ reads - WKT in any dialect,
 PROJJSON, a `urn:ogc:def:crs:...`, an `IAU:2015:...` code, a `+proj` string
 with parameters proj4js does not parse - goes through the same normalisation
-and comes back as the PROJ.4 string proj4js executes. That is the split to
-keep in mind: **PROJ decides what a CRS means; proj4js runs the projection
-for the mesh.** When PROJ understands a CRS whose projection proj4js cannot
-run (`+proj=aitoff`, say), the message says exactly that, rather than
-"unknown".
+and comes back as the PROJ.4 string proj4js executes.
+
+#### Two executors
+
+That is the split to keep in mind: **PROJ decides what a CRS means; an
+executor runs the projection for the mesh.** There are two, chosen per
+display CRS, and the status line says which (`Executor:`):
+
+- **proj4js**, whenever it can: synchronous, microseconds per vertex, the
+  mesh for a new view is ready in the same frame. Its couple of dozen
+  projections plus the five added in `projections.ts` cover most of what
+  anyone types.
+- **PROJ in wasm**, for everything else (`+proj=aitoff`, `bonne`, any of the
+  hundred-odd others, and any CRS PROJ can build that proj4js cannot): the
+  display transforms go to the worker as one batch per stage - about 4 ms
+  for a 4k-vertex mesh each way - so the mesh for a new view lands a frame
+  or two later. While dragging, the camera moves at once over the mesh it
+  has and the projection catches up; the graticule, wrap detection and
+  fit go the same way. `core/transform.ts` is the seam: a `GeoTransform`
+  with batch `toGeo`/`fromGeo` for either executor, and synchronous forms
+  only when the executor is proj4js.
+
+The source side is always proj4js: UVs are computed per vertex on the
+main thread, and a source in a CRS proj4js cannot run is rare enough that
+it is still reported rather than routed.
 
 Failing all four, put the definition on the layer URL and it is registered
 under the source's own code, so later layers get it too (`#crs=` takes WKT
@@ -259,11 +279,12 @@ exactly the sort of thing this is meant to catch.
 #### Projections proj4js does not have
 
 Resolving a code is one thing; executing the projection for every mesh
-vertex, synchronously, is another, and that is proj4js's job. It implements
-a couple of dozen projections where PROJ has about 150, so
-`core/projections.ts` adds the ones people reach for in centred mode and
-proj4js lacks: **Eckert IV, Natural Earth, Hammer, Winkel Tripel** and the
-**interrupted Goode homolosine**. They are spherical closed forms ported
+vertex is another. proj4js does that synchronously, which is what makes the
+interactive path feel the way it does, but it implements a couple of dozen
+projections where PROJ has about 150. `core/projections.ts` adds the ones
+people reach for in centred mode so they stay on the fast executor:
+**Eckert IV, Natural Earth, Hammer, Winkel Tripel** and the **interrupted
+Goode homolosine**. Everything else runs through the PROJ executor above. They are spherical closed forms ported
 from PROJ's sources, and `tools/check-projections.py` holds them to PROJ on a
 global grid: forward within a millimetre, inverse round trip to 1e-10
 degrees. All of them are centred-mode presets alongside sinusoidal,
@@ -448,6 +469,7 @@ src/core/            What a layer is, independent of drawing
   crs.ts             proj4 definitions, zone synthesis, runtime lookup
   projwasm.ts        PROJ in wasm as the resolver of last resort
   projections.ts     eck4, natearth, hammer, wintri, igh for proj4js
+  transform.ts       GeoTransform: display <-> lon/lat by either executor
   centred.ts         Centred-projection templates and pan-as-recentre
   colormap.ts        Colour ramps, including value-anchored palettes
   graticule.ts       Lon/lat lines projected into the display CRS

@@ -19,6 +19,7 @@
  */
 
 import proj4 from 'proj4';
+import { geoTransform } from './transform';
 
 export interface CentredPreset {
   label: string;
@@ -156,6 +157,33 @@ export function centredCRS(template: string, lon: number, lat: number): string {
  * of an orthographic view, say), in which case the caller should keep the
  * old centre.
  */
+/**
+ * panCentre for any executor: the inverse and the round trip are batches
+ * through the display transform of the current centre's CRS.
+ */
+export async function panCentreAsync(
+  template: string,
+  lon: number,
+  lat: number,
+  dx: number,
+  dy: number
+): Promise<[number, number] | null> {
+  if (dx === 0 && dy === 0) return [lon, lat];
+  const geo = geoTransform(centredCRS(template, lon, lat));
+  try {
+    const ll = await geo.toGeo(new Float64Array([dx, dy]));
+    const nlon = ll[0], nlat = ll[1];
+    if (!isFinite(nlon) || !isFinite(nlat)) return null;
+    const b = await geo.fromGeo(new Float64Array([nlon, nlat]));
+    const err = Math.hypot(b[0] - dx, b[1] - dy);
+    const scale = Math.max(1, Math.hypot(dx, dy));
+    if (!isFinite(err) || err > 1e-6 * scale + 1) return null;
+    return normaliseLonLat(nlon, nlat);
+  } catch {
+    return null;
+  }
+}
+
 export function panCentre(
   template: string,
   lon: number,
