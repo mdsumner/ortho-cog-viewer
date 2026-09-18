@@ -255,6 +255,14 @@
             <input type="text" id="centre-lat" class="small" value="-90" title="latitude" />
             <span class="hint">lon, lat (drag the map to move it; shift-drag looks around without re-centring)</span>
           </div>
+          <div class="control-row">
+            <label for="recentre">Re-centre:</label>
+            <select id="recentre" title="when a drag moves the projection centre">
+              <option value="auto">auto (live on proj4js, on release on PROJ)</option>
+              <option value="live">live, while dragging</option>
+              <option value="release">on release</option>
+            </select>
+          </div>
         </div>
         <div class="control-row">
           <label>Grid:</label>

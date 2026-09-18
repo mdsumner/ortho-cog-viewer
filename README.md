@@ -219,13 +219,19 @@ display CRS, and the status line says which (`Executor:`):
   hundred-odd others, and any CRS PROJ can build that proj4js cannot): the
   display transforms go to the worker as one batch per stage - about 4 ms
   for a 4k-vertex mesh each way - so the mesh for a new view lands a frame
-  or two later. While dragging, the camera slides over the mesh it has and
-  the projection re-centres once, on release: re-centring an unfolded net
-  such as `+proj=isea` re-cuts the whole map, and doing that thirty times
-  a second is hectic rather than informative. The graticule, wrap detection
-  and fit go the same way. In either executor a drag whose screen centre
-  lands off the map (a facet gap, the horizon) is kept as a look-around
-  rather than snapped back. `core/transform.ts` is the seam: a `GeoTransform`
+  or two later. The graticule, wrap detection and fit go the same way.
+
+**Re-centre** (the select under the centre, `recentre=auto|live|release`)
+says when a drag moves the projection centre. `live` re-centres every
+frame, which on a symmetric projection reads as rotating a globe. `release`
+lets the camera slide over the map as it is and re-centres once on
+mouse-up: re-centring an unfolded net such as `+proj=isea` re-cuts the whole
+map, and doing that thirty times a second is hectic rather than
+informative, and a lobed map like `+proj=interrupted +base=poly +gores=5`
+reads better settling once too. `auto` (the default) is live on proj4js and
+on release on PROJ. In either executor a drag whose screen centre lands off
+the map (a facet gap, the horizon) is kept as a look-around rather than
+snapped back. `core/transform.ts` is the seam: a `GeoTransform`
   with batch `toGeo`/`fromGeo` for either executor, and synchronous forms
   only when the executor is proj4js.
 
@@ -402,6 +408,7 @@ percentage of vertices that survived.
 | `wire`   | `1` to draw the mesh triangles over the imagery                    |
 | `grat`   | `0` to hide the 10-degree graticule (on by default)                |
 | `wrap`   | `1` to repeat the world sideways where the projection has a repeat |
+| `recentre` | centred mode: `auto` (default), `live` or `release`, see above |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
 | `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`, or a world one: `sinu`, `moll`, `robin`, `eqearth`, `eck4`, `natearth`, `hammer`, `wintri`, `igh`), a template, or a fixed CRS |

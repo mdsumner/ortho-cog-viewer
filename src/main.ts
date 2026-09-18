@@ -54,6 +54,14 @@ let mode: Mode = 'centred';
 let gridSize = 64;
 let showWireframe = false;
 let wrapWorld = false;         // repeat the world sideways where the projection allows
+// When a drag moves the projection centre: every frame, or once on release.
+// auto: live under proj4js (free), on release under PROJ (a round trip, and
+// for an unfolded net a re-cut of the whole map).
+type RecentreMode = 'auto' | 'live' | 'release';
+let recentreMode: RecentreMode = 'auto';
+// A release-mode drag accumulates as a look-around offset until the release
+// folds it into the centre; this says the current offset is that kind.
+let foldOnRelease = false;
 let wrapSpec: WrapSpec | null = null;
 let wrapCRS = '';              // display CRS wrapSpec was detected for
 let showGraticule = true;
@@ -138,6 +146,7 @@ let gridSizeInput: HTMLInputElement;
 let wireframeInput: HTMLInputElement;
 let graticuleInput: HTMLInputElement;
 let wrapInput: HTMLInputElement;
+let recentreSelect: HTMLSelectElement;
 let gratMinor: LineRenderer;
 let gratMajor: LineRenderer;
 let vertexCountEl: HTMLElement;
@@ -398,6 +407,13 @@ function onViewChange(state: ViewState): void {
   });
 }
 
+/** Does a drag re-centre the projection as it goes, for this CRS? */
+function recentreLive(): boolean {
+  if (recentreMode === 'live') return true;
+  if (recentreMode === 'release') return false;
+  return executorFor(currentDisplayCRS()) === 'proj4js';
+}
+
 function handleViewChange(state: ViewState): void {
   if (mode === 'centred') {
     if (executorFor(currentDisplayCRS()) === 'proj' && !state.shift &&
@@ -405,13 +421,30 @@ function handleViewChange(state: ViewState): void {
       handleViewChangeProj(state);
       return;
     }
+    // On release of a release-mode drag, fold the accumulated look-around
+    // into the centre: the point now under the screen centre becomes it.
+    if (!state.dragging && foldOnRelease && !state.shift) {
+      foldOnRelease = false;
+      const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat, centredOriginX, centredOriginY);
+      if (next) {
+        [centreLon, centreLat] = next;
+        lookOffsetX = 0;
+        lookOffsetY = 0;
+        updateCentredOrigin();
+        syncCentreInputs();
+        regenerateMesh(state);
+        layoutAllLayers();
+      }
+    }
     // Consume any pan offset: the display point now at the screen centre
     // becomes the new projection centre, and the camera snaps back to origin.
     if (state.centerX !== 0 || state.centerY !== 0) {
-      if (state.shift) {
-        // Look around: move over the projection as it stands, no re-centring.
+      if (state.shift || (state.dragging && !recentreLive())) {
+        // Look around: move over the projection as it stands, no re-centring
+        // (for a release-mode drag, not yet).
         lookOffsetX += state.centerX;
         lookOffsetY += state.centerY;
+        if (!state.shift) foldOnRelease = true;
       } else {
         const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat,
           centredOriginX + state.centerX, centredOriginY + state.centerY);
@@ -455,11 +488,12 @@ function handleViewChangeProj(state: ViewState): void {
   render(state);
   scheduleRefresh(state);
   scheduleUrlUpdate();
-  // While the drag is going the camera just slides over the mesh it has;
-  // re-centring is a round trip and, for an unfolded net, re-cuts the map,
-  // so it happens once, on release. (Wheel zoom has no drag and re-centres
-  // as it goes.)
-  if (state.dragging || panInFlight) return;
+  // In release mode the camera just slides over the mesh it has while the
+  // drag is going; re-centring is a round trip and, for an unfolded net,
+  // re-cuts the map, so it happens once, on release. (Wheel zoom has no
+  // drag and re-centres as it goes.) Live mode re-centres as fast as the
+  // round trips come back.
+  if ((state.dragging && !recentreLive()) || panInFlight) return;
   panInFlight = true;
   const dx = state.centerX, dy = state.centerY;
   const template = resolveTemplate(centredProj);
@@ -498,7 +532,7 @@ function handleViewChangeProj(state: ViewState): void {
     .finally(() => {
       panInFlight = false;
       const s = viewController.getState();
-      if (!s.dragging && (s.centerX !== 0 || s.centerY !== 0)) handleViewChangeProj(s);
+      if ((!s.dragging || recentreLive()) && (s.centerX !== 0 || s.centerY !== 0)) handleViewChangeProj(s);
     });
 }
 
@@ -868,7 +902,8 @@ function updateInfo(state: ViewState): void {
   if (mode === 'centred') {
     lines.push(`Centre: ${centreLon.toFixed(4)}, ${centreLat.toFixed(4)}`);
     if (wrapWorld) lines.push(currentWrap() ? 'Wrap: repeating the world' : 'Wrap: this projection has no sideways repeat');
-    if (lookOffsetX !== 0 || lookOffsetY !== 0) {
+    lines.push(`Re-centre: ${recentreLive() ? 'live' : 'on release'}`);
+    if ((lookOffsetX !== 0 || lookOffsetY !== 0) && !foldOnRelease) {
       lines.push(`Looking ${formatUnits(Math.hypot(lookOffsetX, lookOffsetY), 'm')} off centre (shift-drag; a plain drag re-centres)`);
     }
   } else {
@@ -1220,6 +1255,7 @@ function syncUI(): void {
   gridSizeInput.value = String(gridSize);
   wireframeInput.checked = showWireframe;
   wrapInput.checked = wrapWorld;
+  recentreSelect.value = recentreMode;
   graticuleInput.checked = showGraticule;
   displayCrsInput.value = displayCRS;
   extentInput.value = [meshExtent.minX, meshExtent.maxX, meshExtent.minY, meshExtent.maxY].join(',');
@@ -1254,6 +1290,9 @@ function applyUrlParams(params: URLSearchParams): void {
 
   const wr = params.get('wrap');
   if (wr !== null) wrapWorld = wr === '1' || wr === 'true';
+
+  const rc = params.get('recentre');
+  if (rc === 'live' || rc === 'release' || rc === 'auto') recentreMode = rc;
 
   const crs = params.get('crs');
   if (crs) displayCRS = crs;
@@ -1308,6 +1347,7 @@ function writeUrl(): void {
   if (showWireframe) p.set('wire', '1');
   if (!showGraticule) p.set('grat', '0');
   if (wrapWorld) p.set('wrap', '1');
+  if (recentreMode !== 'auto') p.set('recentre', recentreMode);
   for (const l of layers) p.append('url', layerUrlWithState(l));
   history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
 }
@@ -1331,6 +1371,7 @@ async function main() {
   gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
   wireframeInput = document.getElementById('wireframe') as HTMLInputElement;
   wrapInput = document.getElementById('wrap') as HTMLInputElement;
+  recentreSelect = document.getElementById('recentre') as HTMLSelectElement;
   graticuleInput = document.getElementById('graticule') as HTMLInputElement;
   vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
@@ -1457,6 +1498,10 @@ async function main() {
   wireframeInput.addEventListener('change', () => {
     showWireframe = wireframeInput.checked;
     render(viewController.getState());
+    scheduleUrlUpdate();
+  });
+  recentreSelect.addEventListener('change', () => {
+    recentreMode = recentreSelect.value as RecentreMode;
     scheduleUrlUpdate();
   });
   wrapInput.addEventListener('change', () => {
