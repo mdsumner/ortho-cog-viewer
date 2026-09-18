@@ -1330,7 +1330,14 @@ function scheduleUrlUpdate(): void {
   urlTimeout = window.setTimeout(writeUrl, 300);
 }
 
-function writeUrl(): void {
+/**
+ * The address bar follows the view - mode, projection, centre, zoom, grid,
+ * the toggles - so a refresh comes back where you were. Layers are not
+ * written as you go: they are the thing you most often want to start
+ * again without, and a link that is meant to be shared gets them
+ * explicitly with the "link" button (or withLayers here).
+ */
+function viewUrl(withLayers: boolean): string {
   const state = viewController.getState();
   const p = new URLSearchParams();
   p.set('mode', mode);
@@ -1348,8 +1355,31 @@ function writeUrl(): void {
   if (!showGraticule) p.set('grat', '0');
   if (wrapWorld) p.set('wrap', '1');
   if (recentreMode !== 'auto') p.set('recentre', recentreMode);
-  for (const l of layers) p.append('url', layerUrlWithState(l));
-  history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
+  if (withLayers) for (const l of layers) p.append('url', layerUrlWithState(l));
+  return `${location.pathname}?${p.toString()}`;
+}
+
+function writeUrl(): void {
+  history.replaceState(null, '', viewUrl(false));
+}
+
+/** A shareable link: the view plus every layer, in the address bar and copied. */
+function shareLink(): void {
+  const rel = viewUrl(true);
+  history.replaceState(null, '', rel);
+  const abs = new URL(rel, location.href).href;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(abs).then(
+      () => console.log('Link copied:', abs),
+      () => console.log('Link (copy by hand):', abs));
+  } else {
+    console.log('Link (copy by hand):', abs);
+  }
+}
+
+/** Back to the defaults: the page with no parameters at all. */
+function resetAll(): void {
+  location.href = location.pathname;
 }
 
 // ---------------------------------------------------------------------------
@@ -1500,6 +1530,8 @@ async function main() {
     render(viewController.getState());
     scheduleUrlUpdate();
   });
+  (document.getElementById('link-btn') as HTMLButtonElement).addEventListener('click', shareLink);
+  (document.getElementById('reset-btn') as HTMLButtonElement).addEventListener('click', resetAll);
   recentreSelect.addEventListener('change', () => {
     recentreMode = recentreSelect.value as RecentreMode;
     scheduleUrlUpdate();

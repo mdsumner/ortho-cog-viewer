@@ -399,6 +399,13 @@ percentage of vertices that survived.
 
 ## URL parameters
 
+The address bar follows the view as you work - mode, projection, centre,
+zoom, grid and the toggles - so a refresh comes back where you were. Layers
+are read from the URL but not written back as you go: they are the thing you
+most often want to start again without. **link** puts a full link, layers
+and all, in the address bar and on the clipboard; **reset** goes back to the
+page with no parameters.
+
 | param    | meaning                                                            |
 |----------|--------------------------------------------------------------------|
 | `mode`   | `fixed` or `centred`                                               |

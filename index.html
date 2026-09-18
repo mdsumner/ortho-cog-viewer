@@ -114,8 +114,14 @@
         color: #9cf;
         font-size: 10px;
       }
-      .title-row button {
+      .title-row .links {
         margin-left: auto;
+        display: flex;
+        gap: 4px;
+      }
+      .title-row .links button {
+        font-size: 10px;
+        padding: 1px 5px;
       }
       #controls.collapsed fieldset,
       #controls.collapsed #info {
@@ -217,7 +223,11 @@
       <div class="title-row">
         <strong>Ortho COG Viewer</strong>
         <a href="https://github.com/mdsumner/ortho-cog-viewer" target="_blank" rel="noopener">source</a>
-        <button id="panel-toggle" title="Collapse/expand panel">_</button>
+        <span class="links">
+          <button id="link-btn" title="Put a link to this view, layers and all, in the address bar and on the clipboard">link</button>
+          <button id="reset-btn" title="Start again with the defaults">reset</button>
+          <button id="panel-toggle" title="Collapse/expand panel">_</button>
+        </span>
       </div>
       
       <fieldset>
