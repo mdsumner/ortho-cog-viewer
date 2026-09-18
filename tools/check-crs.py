@@ -16,7 +16,13 @@ lossy and nothing downstream can be trusted.
 
   pip install pyproj
   python3 tools/check-crs.py
+  python3 tools/check-crs.py --engine 'node tools/proj-wasm-engine.mjs'
   python3 tools/check-crs.py --engine './my-engine'    # see CONTRACT below
+
+The second form drives PROJ itself, in wasm, exactly as the viewer ships it
+(pnpm run check-crs). That is the third implementation in play: PROJ resolves
+codes the table does not know, proj4js executes for the mesh, and rwarp's
+engine executes for the warp.
 
 CONTRACT for an external engine (for example a proj4rs binary, to compare
 the wasm warp engine's transforms with these): read a JSON array of jobs on
@@ -27,6 +33,10 @@ stdin and write a JSON array of results on stdout.
   out  [{"code": 28355, "ok": true,
          "xy":    [[x, y], ...],     # projected using the code
          "xyDef": [[x, y], ...]}]    # projected using "def"
+
+The result is read from the LAST line of stdout, so an engine whose workers
+chatter on stdout (PROJ's own log lines, from a worker thread) still works
+as long as the JSON comes last, on a line of its own.
 
 Angular units are degrees in this contract. proj4rs works in radians
 internally, so an engine wrapping it has to convert - which is the sort of
@@ -125,7 +135,11 @@ def run_external_engine(command, jobs):
     if res.returncode != 0:
         print(f'engine {command!r} failed:\n{res.stderr[-2000:]}')
         sys.exit(1)
-    return json.loads(res.stdout)
+    lines = [l for l in res.stdout.splitlines() if l.strip()]
+    if not lines:
+        print(f'engine {command!r} wrote nothing to stdout')
+        sys.exit(1)
+    return json.loads(lines[-1])
 
 
 def error_m(got, expected, geographic):

@@ -19,7 +19,8 @@
 
 import { generateGridMesh, GridMesh } from './engine/mesh';
 import { transformBounds } from './core/bounds';
-import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage } from './core/crs';
+import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider } from './core/crs';
+import { projWasmProvider } from './core/projwasm';
 import { RasterSource, parseFragment, formatFragment } from './core/source';
 import { COGSource, splitCogUrl } from './core/cogSource';
 import { COLORMAPS, colormapCss, colormapRange, isColormapName } from './core/colormap';
@@ -34,6 +35,8 @@ import { MeshEngine } from './engine/meshEngine';
 import proj4 from 'proj4';
 
 registerProjections();
+// PROJ in wasm answers for codes nothing built in knows; loaded on first miss.
+setDefinitionProvider(projWasmProvider);
 
 type Mode = 'fixed' | 'centred';
 

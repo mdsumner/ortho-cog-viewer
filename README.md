@@ -174,7 +174,7 @@ Per-layer state rides on the URL fragment:
 ### Coordinate reference systems
 
 proj4js ships no EPSG database, so every code has to be defined before it can
-be used. `crs.ts` resolves one in three steps:
+be used. `crs.ts` resolves one in four steps:
 
 1. a table of named definitions (polar stereographic including the NSIDC and
    Australian Antarctic ones, EASE-Grid 2.0, Australian Albers and Lambert in
@@ -182,10 +182,16 @@ be used. `crs.ts` resolves one in three steps:
 2. zone arithmetic, for the families where the code number encodes the UTM
    zone: WGS84 `326xx`/`327xx`, **GDA94 MGA `283xx`**, GDA2020 MGA `78xx`,
    NAD83 `269xx`, ETRS89 `258xx`;
-3. a fetch from epsg.io at runtime, which needs network access and CORS from
-   that host, so it is a convenience rather than something to rely on.
+3. **PROJ itself**, compiled to wasm with the real EPSG database
+   ([proj-wasm](https://github.com/willcohen/clj-proj), Will Cohen's build of
+   PROJ 9). It is 15 MB and runs in a worker, so it is not part of the page:
+   it is fetched the first time a code misses steps 1 and 2, takes about half
+   a second to come up, and then answers for any code PROJ knows, offline.
+   A session that only ever sees known codes never loads it;
+4. a fetch from epsg.io at runtime, which needs network access and CORS from
+   that host. Kept as the fallback for when step 3 cannot load.
 
-Failing all three, put the definition on the layer URL and it is registered
+Failing all four, put the definition on the layer URL and it is registered
 under the source's own code, so later layers get it too:
 
 ```
@@ -213,16 +219,29 @@ projecting with and not a plausible-looking near-miss.
 
 This matters for a second transform implementation - a GDAL or proj4rs warp
 engine in wasm, say, which cannot see proj4js's registry. It is handed the
-definition string, never the code.
+definition string, never the code. With step 3 in place the arrangement is:
+PROJ resolves, proj4js executes for the mesh, and any other engine executes
+from the same string. No engine resolves a code on its own; that is how two
+views of one COG end up quietly in different places.
 
 `check-crs.py` guards that handoff: projecting through `"EPSG:NNNN"` and
 through the string `crsDefinition` gives for it must agree to 1e-6 m, or the
 handoff is lossy and nothing downstream can be trusted. The check also takes
-`--engine './my-engine'` and drives an external implementation over a small
-JSON contract (documented at the top of the script) so a second engine can be
-compared against both PROJ and proj4js on the same points. Note that the
-contract is in degrees: proj4rs works in radians internally, which is exactly
-the sort of thing this is meant to catch.
+`--engine <command>` and drives an external implementation over a small JSON
+contract (documented at the top of the script) so another engine can be
+compared against both PROJ and proj4js on the same points.
+`tools/proj-wasm-engine.mjs` is one such engine, PROJ-in-wasm exactly as the
+viewer ships it (`pnpm run check-crs`); it agrees with pyproj to the
+millimetre on every code in the table, which is what you would hope from the
+same library twice, and it is the template for wiring in proj4rs. Note that
+the contract is in degrees: proj4rs works in radians internally, which is
+exactly the sort of thing this is meant to catch.
+
+`tools/bundle-proj-wasm.mjs` lays proj-wasm out flat in `public/proj-wasm/`
+(one esbuild bundle per entry, workers and all, every file finding its
+neighbours relative to its own URL) so the viewer can import it by URL on
+demand rather than through the main bundle. It runs before `dev` and `build`
+and its output is not committed.
 
 ### Seams and poles
 
@@ -333,11 +352,14 @@ src/core/            What a layer is, independent of drawing
   wmts.ts            WMTS GetCapabilities parsing
   bounds.ts          Extents and transforms between CRSs
   crs.ts             proj4 definitions, zone synthesis, runtime lookup
+  projwasm.ts        PROJ in wasm as the resolver of last resort
   centred.ts         Centred-projection templates and pan-as-recentre
   colormap.ts        Colour ramps, including value-anchored palettes
   graticule.ts       Lon/lat lines projected into the display CRS
 
 tools/check-crs.py   Checks crs.ts against PROJ's EPSG database
+tools/proj-wasm-engine.mjs   proj-wasm as an engine for check-crs.py
+tools/bundle-proj-wasm.mjs   Lays proj-wasm out in public/proj-wasm/
 ```
 
 ### The engine seam
