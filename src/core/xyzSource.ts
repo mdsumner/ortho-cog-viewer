@@ -68,6 +68,15 @@ export const TILE_PRESETS: Record<string, TilePreset> = {
     attribution: 'GEBCO Compilation Group (2024); COG by Alex Leith on source.coop',
     cog: true
   },
+  'ibcso-chart': {
+    label: 'IBCSO v2 digital chart, the printed map as a COG (EPSG:9354)',
+    // Git LFS: the repo's raw URL is a 133-byte pointer, and github.com's
+    // redirect to the media host carries no CORS headers, so the media
+    // host is addressed directly. It serves Range with CORS.
+    template: 'https://media.githubusercontent.com/media/mdsumner/ibcso-cog/main/IBCSO_v2_digital_chart.tif',
+    attribution: 'IBCSO v2 (Dorschel et al. 2022, doi:10.1038/s41597-022-01366-7), chart by Simon Dreutter',
+    cog: true
+  },
   'mur-sst-20260829': {
     label: 'GHRSST MUR SST 2026-08-29, deg C (COG, source.coop)',
     template: 'https://data.source.coop/ausantarctic/ghrsst-mur-v2/2026/08/29/20260829090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1_analysed_sst.tif#scale=0.001&offset=25&min=-2&max=32&cmap=turbo',
