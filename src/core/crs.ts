@@ -145,10 +145,9 @@ export function registerProjections(): void {
 export function crsDefinition(crs: string): string | null {
   if (!crs) return null;
   const t = crs.trim();
-  if (!/^EPSG:\d+$/i.test(t)) return t;   // already a definition
-
   const known = definitions.get(t) ?? definitions.get(t.toUpperCase());
   if (known) return known;
+  if (!/^EPSG:\d+$/i.test(t)) return t;   // a definition as given, not normalised
 
   // proj4js ships definitions of its own - the WGS84 UTM zones among them -
   // so a code can be perfectly usable here without ever passing through
@@ -226,24 +225,33 @@ const remoteTried = new Map<string, Promise<boolean>>();
  */
 export async function resolveCRS(crs: string): Promise<boolean> {
   if (ensureCRS(crs)) return true;
-  const m = /^EPSG:(\d+)$/i.exec(crs.trim());
-  if (!m) return false;
-  const code = m[1];
+  const key = crs.trim();
+  if (!key) return false;
+  const m = /^EPSG:(\d+)$/i.exec(key);
+  const code = m ? m[1] : null;
 
-  let attempt = remoteTried.get(code);
+  let attempt = remoteTried.get(key);
   if (!attempt) {
     attempt = (async () => {
+      // The provider (PROJ) reads anything: a code, WKT in any dialect,
+      // PROJJSON, a URN, a +proj string with parameters proj4js does not
+      // parse. Whatever it is, ask for the PROJ.4 string and try to use that.
       if (provider) {
         try {
-          const def = await provider(`EPSG:${code}`);
-          if (def && defineCRS(`EPSG:${code}`, def)) {
-            console.log(`Resolved EPSG:${code} through the definition provider`);
-            return true;
+          const def = await provider(key);
+          if (def) {
+            if (defineCRS(key, def)) {
+              console.log(`Resolved ${describe(key)} through the definition provider`);
+              return true;
+            }
+            failures.set(key, executorFailure(def));
+            return false;
           }
         } catch (err) {
-          console.warn(`Definition provider failed for EPSG:${code}:`, err);
+          console.warn(`Definition provider failed for ${describe(key)}:`, err);
         }
       }
+      if (!code) return false;
       for (const url of [`https://epsg.io/${code}.proj4`, `https://epsg.io/${code}.wkt`]) {
         try {
           const res = await fetch(url);
@@ -260,9 +268,26 @@ export async function resolveCRS(crs: string): Promise<boolean> {
       }
       return false;
     })();
-    remoteTried.set(code, attempt);
+    remoteTried.set(key, attempt);
   }
   return attempt;
+}
+
+// Why the last attempt at a CRS failed, when the reason is more useful than
+// "unknown": PROJ understood it, proj4js could not execute the result.
+const failures = new Map<string, string>();
+
+function describe(crs: string): string {
+  return crs.length > 60 ? crs.slice(0, 57) + '...' : crs;
+}
+
+function executorFailure(def: string): string {
+  const m = /\+proj=([^\s]+)/.exec(def);
+  return m
+    ? `PROJ understands it (${describe(def)}) but proj4js cannot execute ` +
+      `+proj=${m[1]}. The projections proj4js runs are its own couple of ` +
+      `dozen plus eck4, natearth, hammer, wintri and igh added here.`
+    : `PROJ understands it but could not express it as a proj4 string proj4js accepts.`;
 }
 
 /**
@@ -270,12 +295,38 @@ export async function resolveCRS(crs: string): Promise<boolean> {
  * not just the failure.
  */
 export function unknownCRSMessage(crs: string): string {
-  return `CRS ${crs} is not known to proj4js.\n\n` +
-    `Built in: UTM-style codes (WGS84, GDA94 and GDA2020 MGA, NAD83, ETRS89) ` +
-    `and a table of common projections. epsg.io is tried at runtime, which ` +
-    `needs network access to that host.\n\n` +
-    `You can give the definition yourself: paste a proj4 string in place of ` +
-    `the code, or put one on a layer URL as\n<url>#crs=+proj=... +ellps=...`;
+  const why = failures.get(crs.trim());
+  if (why) return `CRS ${describe(crs)}:\n\n${why}`;
+  return `CRS ${describe(crs)} could not be resolved.\n\n` +
+    `Tried: the built-in table, UTM-style zone codes (WGS84, GDA94 and ` +
+    `GDA2020 MGA, NAD83, ETRS89), PROJ itself (which needs the proj-wasm ` +
+    `folder to load), and epsg.io (which needs network access to that host).\n\n` +
+    `You can give the definition yourself: paste a proj4 string or WKT in ` +
+    `place of the code, or put one on a layer URL as\n<url>#crs=+proj=... +ellps=...`;
+}
+
+/**
+ * Turn any CRS text into a definition proj4js can use, or null. A string
+ * proj4js already accepts is returned as it is; otherwise PROJ normalises it.
+ */
+export async function normaliseDefinition(def: string): Promise<string | null> {
+  const d = def.trim();
+  if (!d) return null;
+  try {
+    proj4(d, 'EPSG:4326');
+    return d;
+  } catch {
+    // not something proj4js reads on its own
+  }
+  if (!provider) return null;
+  try {
+    const norm = await provider(d);
+    if (!norm) return null;
+    proj4(norm, 'EPSG:4326');
+    return norm;
+  } catch {
+    return null;
+  }
 }
 
 /**

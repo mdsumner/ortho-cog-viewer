@@ -7,7 +7,7 @@
 import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
 import { RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
 import { SourceBounds } from './bounds';
-import { resolveCRS, defineCRS, unknownCRSMessage } from './crs';
+import { resolveCRS, defineCRS, unknownCRSMessage, normaliseDefinition } from './crs';
 
 // One open handle per URL; the promise is cached so concurrent opens share it.
 const tiffCache = new Map<string, Promise<GeoTIFF>>();
@@ -226,8 +226,12 @@ export class COGSource implements RasterSource {
     // it (or stand in entirely when the file has no usable code).
     const crs = parseCRSFromGeoKeys(image.getGeoKeys()) || (opts.crs ? 'CUSTOM' : null);
     if (!crs) throw new Error('COG has no CRS information, and no #crs= was given');
-    if (opts.crs && !defineCRS(crs, opts.crs)) {
-      throw new Error(`The #crs= definition for ${crs} could not be parsed by proj4`);
+    if (opts.crs) {
+      const def = await normaliseDefinition(opts.crs);
+      if (!def || !defineCRS(crs, def)) {
+        throw new Error(`The #crs= definition for ${crs} could not be used: ` +
+          `neither proj4js nor PROJ could turn it into something proj4js executes`);
+      }
     }
     if (!await resolveCRS(crs)) {
       throw new Error(unknownCRSMessage(crs));

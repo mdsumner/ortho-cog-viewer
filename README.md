@@ -192,8 +192,18 @@ be used. `crs.ts` resolves one in four steps:
 4. a fetch from epsg.io at runtime, which needs network access and CORS from
    that host. Kept as the fallback for when step 3 cannot load.
 
+Step 3 is not only for codes. Anything PROJ reads - WKT in any dialect,
+PROJJSON, a `urn:ogc:def:crs:...`, an `IAU:2015:...` code, a `+proj` string
+with parameters proj4js does not parse - goes through the same normalisation
+and comes back as the PROJ.4 string proj4js executes. That is the split to
+keep in mind: **PROJ decides what a CRS means; proj4js runs the projection
+for the mesh.** When PROJ understands a CRS whose projection proj4js cannot
+run (`+proj=aitoff`, say), the message says exactly that, rather than
+"unknown".
+
 Failing all four, put the definition on the layer URL and it is registered
-under the source's own code, so later layers get it too:
+under the source's own code, so later layers get it too (`#crs=` takes WKT
+as well, through the same normalisation):
 
 ```
 cog.tif#crs=+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +x_0=2600000 +y_0=1200000 +ellps=bessel
