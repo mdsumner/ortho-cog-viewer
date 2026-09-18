@@ -219,9 +219,13 @@ display CRS, and the status line says which (`Executor:`):
   hundred-odd others, and any CRS PROJ can build that proj4js cannot): the
   display transforms go to the worker as one batch per stage - about 4 ms
   for a 4k-vertex mesh each way - so the mesh for a new view lands a frame
-  or two later. While dragging, the camera moves at once over the mesh it
-  has and the projection catches up; the graticule, wrap detection and
-  fit go the same way. `core/transform.ts` is the seam: a `GeoTransform`
+  or two later. While dragging, the camera slides over the mesh it has and
+  the projection re-centres once, on release: re-centring an unfolded net
+  such as `+proj=isea` re-cuts the whole map, and doing that thirty times
+  a second is hectic rather than informative. The graticule, wrap detection
+  and fit go the same way. In either executor a drag whose screen centre
+  lands off the map (a facet gap, the horizon) is kept as a look-around
+  rather than snapped back. `core/transform.ts` is the seam: a `GeoTransform`
   with batch `toGeo`/`fromGeo` for either executor, and synchronous forms
   only when the executor is proj4js.
 

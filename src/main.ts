@@ -417,9 +417,13 @@ function handleViewChange(state: ViewState): void {
           centredOriginX + state.centerX, centredOriginY + state.centerY);
         if (next) {
           [centreLon, centreLat] = next;
+          lookOffsetX = 0;
+          lookOffsetY = 0;
+        } else {
+          // Off the map: keep the view where it was put, as a look-around.
+          lookOffsetX += state.centerX;
+          lookOffsetY += state.centerY;
         }
-        lookOffsetX = 0;
-        lookOffsetY = 0;
       }
       viewController.setState({ centerX: 0, centerY: 0 });
       state = viewController.getState();
@@ -451,13 +455,31 @@ function handleViewChangeProj(state: ViewState): void {
   render(state);
   scheduleRefresh(state);
   scheduleUrlUpdate();
-  if (panInFlight) return;
+  // While the drag is going the camera just slides over the mesh it has;
+  // re-centring is a round trip and, for an unfolded net, re-cuts the map,
+  // so it happens once, on release. (Wheel zoom has no drag and re-centres
+  // as it goes.)
+  if (state.dragging || panInFlight) return;
   panInFlight = true;
   const dx = state.centerX, dy = state.centerY;
   const template = resolveTemplate(centredProj);
   panCentreAsync(template, centreLon, centreLat, centredOriginX + dx, centredOriginY + dy)
     .then(async (next) => {
-      if (next) [centreLon, centreLat] = next;
+      if (!next) {
+        // The screen centre is off the map (a facet gap, the horizon): keep
+        // the view where the user put it as a look-around, no snap back.
+        lookOffsetX += dx;
+        lookOffsetY += dy;
+        centredOriginX += dx;
+        centredOriginY += dy;
+        const s = viewController.getState();
+        viewController.setState({ centerX: s.centerX - dx, centerY: s.centerY - dy });
+        regenerateMesh(viewController.getState());
+        layoutAllLayers();
+        render(viewController.getState());
+        return;
+      }
+      [centreLon, centreLat] = next;
       lookOffsetX = 0;
       lookOffsetY = 0;
       // The origin for the new centre, then take the consumed pan off the camera.
@@ -476,7 +498,7 @@ function handleViewChangeProj(state: ViewState): void {
     .finally(() => {
       panInFlight = false;
       const s = viewController.getState();
-      if (s.centerX !== 0 || s.centerY !== 0) handleViewChangeProj(s);
+      if (!s.dragging && (s.centerX !== 0 || s.centerY !== 0)) handleViewChangeProj(s);
     });
 }
 

@@ -10,6 +10,8 @@ export interface ViewState {
   zoom: number;  // log2 scale: 0 = 1:1, -1 = half size, 1 = double size
   /** The pan in centerX/centerY came from a shift-drag (mouse only). */
   shift?: boolean;
+  /** A drag is in progress; the next change with this false is the release. */
+  dragging?: boolean;
 }
 
 export type ViewChangeCallback = (state: ViewState) => void;
@@ -63,6 +65,7 @@ export class ViewController {
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.state.shift = e.shiftKey;
+    this.state.dragging = true;
     this.canvas.style.cursor = 'grabbing';
   };
 
@@ -78,9 +81,15 @@ export class ViewController {
   };
 
   private onMouseUp = (): void => {
+    const wasDragging = this.isDragging;
     this.isDragging = false;
-    this.state.shift = false;
+    this.state.dragging = false;
     this.canvas.style.cursor = 'grab';
+    // The release is a view change too: whoever defers work during a drag
+    // does it now. shift stays set through this call so the release is
+    // classified like the drag it ends.
+    if (wasDragging) this.onChange(this.state);
+    this.state.shift = false;
   };
 
   private onWheel = (e: WheelEvent): void => {
@@ -109,6 +118,7 @@ export class ViewController {
     this.state.shift = false;
     if (e.touches.length === 1) {
       this.isDragging = true;
+      this.state.dragging = true;
       this.lastX = e.touches[0].clientX;
       this.lastY = e.touches[0].clientY;
     } else if (e.touches.length === 2) {
@@ -150,7 +160,10 @@ export class ViewController {
   };
 
   private onTouchEnd = (): void => {
+    const wasDragging = this.isDragging;
     this.isDragging = false;
+    this.state.dragging = false;
+    if (wasDragging) this.onChange(this.state);
   };
 
   private onResize = (): void => {
