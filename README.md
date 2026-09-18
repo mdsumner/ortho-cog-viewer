@@ -21,6 +21,7 @@ Centred projection mode (the projection centre follows the screen centre, drag t
 - [Lambert azimuthal equal area centred on Casey](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=110.5,-66.3&zoom=-13)
 - [Gnomonic over the Ross Sea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=gnom&center=180,-75&zoom=-13)
 - [S2 Tasmania tile on the globe, Blue Marble underneath](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
+- [Goode homolosine, interrupted, rotating under the cursor](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=igh&center=147,-20&zoom=-16&graticule=1&url=preset:gebco-2024)
 
 Fixed extent mode (a static display CRS with a camera over it, the original design):
 
@@ -237,6 +238,26 @@ same library twice, and it is the template for wiring in proj4rs. Note that
 the contract is in degrees: proj4rs works in radians internally, which is
 exactly the sort of thing this is meant to catch.
 
+#### Projections proj4js does not have
+
+Resolving a code is one thing; executing the projection for every mesh
+vertex, synchronously, is another, and that is proj4js's job. It implements
+a couple of dozen projections where PROJ has about 150, so
+`core/projections.ts` adds the ones people reach for in centred mode and
+proj4js lacks: **Eckert IV, Natural Earth, Hammer, Winkel Tripel** and the
+**interrupted Goode homolosine**. They are spherical closed forms ported
+from PROJ's sources, and `tools/check-projections.py` holds them to PROJ on a
+global grid: forward within a millimetre, inverse round trip to 1e-10
+degrees. All of them are centred-mode presets alongside sinusoidal,
+Mollweide, Robinson and Equal Earth, which proj4js already had.
+
+One wart found on the way, worth knowing if a Winkel Tripel definition
+leaves this viewer: PROJ's own pipeline defaults a missing `+lat_1` to
+Winkel's 50d28' (acos(2/pi)), but when the same string is treated as a CRS
+(GDAL, pyproj, `proj_create_crs_to_crs`) the missing `lat_1` is filled in as
+0. Same string, two projections, thousands of kilometres apart. The preset
+writes `+lat_1` out explicitly so every consumer agrees.
+
 `tools/bundle-proj-wasm.mjs` lays proj-wasm out flat in `public/proj-wasm/`
 (one esbuild bundle per entry, workers and all, every file finding its
 neighbours relative to its own URL) so the viewer can import it by URL on
@@ -285,7 +306,7 @@ percentage of vertices that survived.
 | `grat`   | `0` to hide the 10-degree graticule (on by default)                |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
-| `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`), a template, or a fixed CRS |
+| `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`, or a world one: `sinu`, `moll`, `robin`, `eqearth`, `eck4`, `natearth`, `hammer`, `wintri`, `igh`), a template, or a fixed CRS |
 | `center` | centred mode: `lon,lat`; fixed mode: `x,y` in display units        |
 
 Any layer URL can carry `#alpha=0.6` for opacity and `#crs=<proj4>` to declare
@@ -353,12 +374,14 @@ src/core/            What a layer is, independent of drawing
   bounds.ts          Extents and transforms between CRSs
   crs.ts             proj4 definitions, zone synthesis, runtime lookup
   projwasm.ts        PROJ in wasm as the resolver of last resort
+  projections.ts     eck4, natearth, hammer, wintri, igh for proj4js
   centred.ts         Centred-projection templates and pan-as-recentre
   colormap.ts        Colour ramps, including value-anchored palettes
   graticule.ts       Lon/lat lines projected into the display CRS
 
 tools/check-crs.py   Checks crs.ts against PROJ's EPSG database
 tools/proj-wasm-engine.mjs   proj-wasm as an engine for check-crs.py
+tools/check-projections.py   Holds projections.ts to PROJ on a global grid
 tools/bundle-proj-wasm.mjs   Lays proj-wasm out in public/proj-wasm/
 ```
 

@@ -57,6 +57,47 @@ export const CENTRED_PRESETS: Record<string, CentredPreset> = {
   omerc: {
     label: 'Oblique Mercator (near north-up)',
     template: '+proj=omerc +alpha=1 +gamma=2 +lonc={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  // World projections take only a central meridian, so panning east-west
+  // rotates the globe under a fixed net and panning north-south just moves
+  // the view. The ones proj4js lacks are in projections.ts.
+  sinu: {
+    label: 'World: sinusoidal',
+    template: '+proj=sinu +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  moll: {
+    label: 'World: Mollweide',
+    template: '+proj=moll +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  robin: {
+    label: 'World: Robinson',
+    template: '+proj=robin +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  eqearth: {
+    label: 'World: Equal Earth',
+    template: '+proj=eqearth +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  eck4: {
+    label: 'World: Eckert IV',
+    template: '+proj=eck4 +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  natearth: {
+    label: 'World: Natural Earth',
+    template: '+proj=natearth +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  hammer: {
+    label: 'World: Hammer',
+    template: '+proj=hammer +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  wintri: {
+    // lat_1 written out on purpose: see projections.ts on what PROJ's CRS
+    // path does with a missing one.
+    label: 'World: Winkel Tripel',
+    template: '+proj=wintri +lat_1=50.46697 +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  igh: {
+    label: 'World: Goode homolosine (interrupted)',
+    template: '+proj=igh +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   }
 };
 

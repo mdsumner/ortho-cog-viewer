@@ -27,6 +27,7 @@
  */
 
 import proj4 from 'proj4';
+import { registerExtraProjections } from './projections';
 
 /** Named definitions: anything whose code is not pure zone arithmetic. */
 const DEFS: Record<string, string> = {
@@ -126,6 +127,7 @@ function register(code: string, def: string): void {
 }
 
 export function registerProjections(): void {
+  registerExtraProjections();
   for (const [code, def] of Object.entries(DEFS)) {
     register(code, def);
   }
