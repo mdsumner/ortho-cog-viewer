@@ -197,13 +197,30 @@ export function ensureCRS(crs: string): boolean {
   }
 }
 
+/**
+ * Something that can turn an EPSG code into a definition string when nothing
+ * built in can: a PROJ build in wasm with the real EPSG database, say. It is
+ * asked only after the table and zone arithmetic have both missed, and only
+ * for codes, so the cost of a large resolver is paid by the rare session that
+ * needs it. Return null for "not known"; throwing is treated the same way.
+ */
+export type DefinitionProvider = (code: string) => Promise<string | null>;
+
+let provider: DefinitionProvider | null = null;
+
+export function setDefinitionProvider(p: DefinitionProvider | null): void {
+  provider = p;
+  remoteTried.clear();   // a new provider deserves a fresh go at earlier misses
+}
+
 // Remote lookups already attempted, so a miss is not retried for every layer.
 const remoteTried = new Map<string, Promise<boolean>>();
 
 /**
- * Like ensureCRS, but falls back to fetching the definition from epsg.io.
- * That needs network and CORS from epsg.io; failure is not an error, it just
- * leaves the CRS unusable for the caller to report.
+ * Like ensureCRS, but falls back to the definition provider if one has been
+ * set, and then to fetching the definition from epsg.io. That last needs
+ * network and CORS from epsg.io; failure is not an error, it just leaves the
+ * CRS unusable for the caller to report.
  */
 export async function resolveCRS(crs: string): Promise<boolean> {
   if (ensureCRS(crs)) return true;
@@ -214,6 +231,17 @@ export async function resolveCRS(crs: string): Promise<boolean> {
   let attempt = remoteTried.get(code);
   if (!attempt) {
     attempt = (async () => {
+      if (provider) {
+        try {
+          const def = await provider(`EPSG:${code}`);
+          if (def && defineCRS(`EPSG:${code}`, def)) {
+            console.log(`Resolved EPSG:${code} through the definition provider`);
+            return true;
+          }
+        } catch (err) {
+          console.warn(`Definition provider failed for EPSG:${code}:`, err);
+        }
+      }
       for (const url of [`https://epsg.io/${code}.proj4`, `https://epsg.io/${code}.wkt`]) {
         try {
           const res = await fetch(url);
