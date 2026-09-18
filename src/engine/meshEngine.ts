@@ -85,7 +85,8 @@ export class MeshEngine implements LayerEngine {
       this.source.crs,
       this.texBounds,
       cell * 1e-2,
-      wrapU
+      wrapU,
+      ctx.wrap
     );
     this.validFraction = geom.validFraction;
     this.needBBox = geom.sourceBBox;

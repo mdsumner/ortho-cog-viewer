@@ -28,6 +28,7 @@ import { XYZSource, TILE_PRESETS, isTileTemplate } from './core/xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './core/wmts';
 import { LineRenderer } from './engine/LineRenderer';
 import { buildGraticule } from './core/graticule';
+import { WrapSpec, detectWrap, copyIndex } from './core/wrap';
 import { ViewController, ViewState } from './ViewController';
 import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './core/centred';
 import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
@@ -51,6 +52,9 @@ const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/
 let mode: Mode = 'centred';
 let gridSize = 64;
 let showWireframe = false;
+let wrapWorld = false;         // repeat the world sideways where the projection allows
+let wrapSpec: WrapSpec | null = null;
+let wrapCRS = '';              // display CRS wrapSpec was detected for
 let showGraticule = true;
 let graticuleCRS = '';        // display CRS the current graticule was built for
 
@@ -130,6 +134,7 @@ let centreLatInput: HTMLInputElement;
 let gridSizeInput: HTMLInputElement;
 let wireframeInput: HTMLInputElement;
 let graticuleInput: HTMLInputElement;
+let wrapInput: HTMLInputElement;
 let gratMinor: LineRenderer;
 let gratMajor: LineRenderer;
 let vertexCountEl: HTMLElement;
@@ -189,8 +194,33 @@ function currentView(state: ViewState): View {
   };
 }
 
+/** The wrap for the current display CRS, detected once per CRS string. */
+function currentWrap(): WrapSpec | null {
+  if (!wrapWorld) return null;
+  const crs = currentDisplayCRS();
+  if (crs !== wrapCRS) {
+    wrapSpec = detectWrap(crs);
+    wrapCRS = crs;
+  }
+  return wrapSpec;
+}
+
 function contextFor(state: ViewState): RenderContext {
-  return { view: currentView(state), grid: baseMesh };
+  return { view: currentView(state), grid: baseMesh, wrap: currentWrap() };
+}
+
+/** Which copies of the world the view currently touches, along the wrap. */
+function copyRange(w: WrapSpec, state: ViewState): [number, number] {
+  const scale = Math.pow(2, state.zoom);
+  const hw = canvas.clientWidth / 2 / scale, hh = canvas.clientHeight / 2 / scale;
+  const cx = state.centerX + centredOriginX, cy = state.centerY + centredOriginY;
+  let kMin = Infinity, kMax = -Infinity;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const k = copyIndex(w, cx + sx * hw, cy + sy * hh);
+    if (k < kMin) kMin = k;
+    if (k > kMax) kMax = k;
+  }
+  return [kMin - 1, kMax + 1];
 }
 
 /** The Style a layer's engine should use, from the shell's own state. */
@@ -267,11 +297,14 @@ function updateVertexCount(): void {
 function updateGraticule(): void {
   if (!showGraticule || !baseMesh) return;
   const crs = currentDisplayCRS();
-  if (crs === graticuleCRS) return;
-  const g = buildGraticule(crs, { stepDeg: 10, sampleDeg: 1, tolerance: meshCellSize() * 1e-2 });
+  const w = currentWrap();
+  const [kMin, kMax] = w ? copyRange(w, viewController.getState()) : [0, 0];
+  const key = `${crs}|${kMin},${kMax}`;
+  if (key === graticuleCRS) return;
+  const g = buildGraticule(crs, { stepDeg: 10, sampleDeg: 1, tolerance: meshCellSize() * 1e-2, wrap: w, kMin, kMax });
   gratMinor.setLines(g.minor);
   gratMajor.setLines(g.major);
-  graticuleCRS = crs;
+  graticuleCRS = key;
 }
 
 function layoutAllLayers(): void {
@@ -696,11 +729,13 @@ function updateInfo(state: ViewState): void {
   ];
   if (mode === 'centred') {
     lines.push(`Centre: ${centreLon.toFixed(4)}, ${centreLat.toFixed(4)}`);
+    if (wrapWorld) lines.push(currentWrap() ? 'Wrap: repeating the world' : 'Wrap: this projection has no sideways repeat');
     if (lookOffsetX !== 0 || lookOffsetY !== 0) {
       lines.push(`Looking ${formatUnits(Math.hypot(lookOffsetX, lookOffsetY), 'm')} off centre (shift-drag; a plain drag re-centres)`);
     }
   } else {
     lines.push(`Centre: ${state.centerX.toFixed(1)}, ${state.centerY.toFixed(1)}`);
+    if (wrapWorld) lines.push(currentWrap() ? 'Wrap: repeating the world' : 'Wrap: this projection has no sideways repeat');
   }
   lines.push(`Layers: ${layers.length}`);
   infoEl.innerHTML = lines.join('<br>');
@@ -1046,6 +1081,7 @@ function syncUI(): void {
   centredPanel.hidden = mode !== 'centred';
   gridSizeInput.value = String(gridSize);
   wireframeInput.checked = showWireframe;
+  wrapInput.checked = wrapWorld;
   graticuleInput.checked = showGraticule;
   displayCrsInput.value = displayCRS;
   extentInput.value = [meshExtent.minX, meshExtent.maxX, meshExtent.minY, meshExtent.maxY].join(',');
@@ -1077,6 +1113,9 @@ function applyUrlParams(params: URLSearchParams): void {
 
   const gr = params.get('grat');
   if (gr !== null) showGraticule = gr === '1' || gr === 'true';
+
+  const wr = params.get('wrap');
+  if (wr !== null) wrapWorld = wr === '1' || wr === 'true';
 
   const crs = params.get('crs');
   if (crs) displayCRS = crs;
@@ -1130,6 +1169,7 @@ function writeUrl(): void {
   if (gridSize !== 64) p.set('grid', String(gridSize));
   if (showWireframe) p.set('wire', '1');
   if (!showGraticule) p.set('grat', '0');
+  if (wrapWorld) p.set('wrap', '1');
   for (const l of layers) p.append('url', layerUrlWithState(l));
   history.replaceState(null, '', `${location.pathname}?${p.toString()}`);
 }
@@ -1152,6 +1192,7 @@ async function main() {
   centreLatInput = document.getElementById('centre-lat') as HTMLInputElement;
   gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
   wireframeInput = document.getElementById('wireframe') as HTMLInputElement;
+  wrapInput = document.getElementById('wrap') as HTMLInputElement;
   graticuleInput = document.getElementById('graticule') as HTMLInputElement;
   vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
@@ -1278,6 +1319,15 @@ async function main() {
   wireframeInput.addEventListener('change', () => {
     showWireframe = wireframeInput.checked;
     render(viewController.getState());
+    scheduleUrlUpdate();
+  });
+  wrapInput.addEventListener('change', () => {
+    wrapWorld = wrapInput.checked;
+    wrapCRS = '';
+    graticuleCRS = '';
+    layoutAllLayers();
+    render(viewController.getState());
+    updateUI();
     scheduleUrlUpdate();
   });
   modeSelect.addEventListener('change', () => {

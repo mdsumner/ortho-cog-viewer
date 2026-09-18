@@ -282,6 +282,38 @@ neighbours relative to its own URL) so the viewer can import it by URL on
 demand rather than through the main bundle. It runs before `dev` and `build`
 and its output is not committed.
 
+### Repeating the world
+
+Tick "wrap" (`wrap=1`) and projections that have a sideways repeat show more
+than one copy of the globe. Which ones do, and by how much, is not a table
+of names: `core/wrap.ts` measures the vector across the base world at each
+latitude, `fwd(lon_0 + 180, lat) - fwd(lon_0 - 180, lat)`, and calls it a
+translational period when it is finite, non-zero at the equator and parallel
+at every latitude. That one test sorts every projection in the viewer:
+
+- **merc, eqc, mill**: the vector is constant, copies tile the plane exactly
+- **sinu, moll, robin, eqearth, eck4, natearth, hammer, wintri, igh**: parallel
+  but shrinking with latitude, so copies touch at the equator with lens-shaped
+  gaps between them, like the interruptions of a homolosine. For igh the join
+  between copies is simply one more interruption.
+- **laea, aeqd**: both edges land on the antipode, the vector is zero: no wrap
+- **ortho, gnom, stere**: the edges are off the map or at infinity: no wrap
+- **lcc, aea**: the edges are related by a rotation, not a translation: no wrap
+- **tmerc, omerc**: both edges are the same meridian. Their repeat runs along
+  y (or u) with the meridian circumference as period, which is a separate
+  facility not built yet.
+
+The mesh reduces every display vertex into the base copy, projects it there,
+and keeps it if the round trip holds; points in the gaps fail the round trip
+and are dropped by the same validity mask that handles poles and horizons.
+The graticule is drawn once per copy in view.
+
+This is not `+over`. PROJ's `+over` continues a projection's formula past
+180 degrees, which for a pseudocylindrical is a shear (the meridian at 360
+is another sinusoid), not a copy. The Mercator case is the only one where
+the two agree. Also worth knowing: proj4js's `cea` returns NaN without
+`+lat_ts`, so a bare `+proj=cea` reports no repeat for that reason alone.
+
 ### Seams and poles
 
 A global lon/lat source has two failure modes for UV interpolation: a
@@ -322,6 +354,7 @@ percentage of vertices that survived.
 | `grid`   | mesh cells across (default 64)                                     |
 | `wire`   | `1` to draw the mesh triangles over the imagery                    |
 | `grat`   | `0` to hide the 10-degree graticule (on by default)                |
+| `wrap`   | `1` to repeat the world sideways where the projection has a repeat |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
 | `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`, or a world one: `sinu`, `moll`, `robin`, `eqearth`, `eck4`, `natearth`, `hammer`, `wintri`, `igh`), a template, or a fixed CRS |
@@ -396,6 +429,7 @@ src/core/            What a layer is, independent of drawing
   centred.ts         Centred-projection templates and pan-as-recentre
   colormap.ts        Colour ramps, including value-anchored palettes
   graticule.ts       Lon/lat lines projected into the display CRS
+  wrap.ts            Detects a projection's sideways repeat, for wrap
 
 tools/check-crs.py   Checks crs.ts against PROJ's EPSG database
 tools/proj-wasm-engine.mjs   proj-wasm as an engine for check-crs.py

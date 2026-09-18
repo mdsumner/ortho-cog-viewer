@@ -25,6 +25,7 @@
 
 import { GridMesh } from './mesh';
 import { RasterSource, FloatStats } from '../core/source';
+import { WrapSpec } from '../core/wrap';
 
 export type Curve = 'linear' | 'sqrt' | 'log';
 
@@ -49,6 +50,8 @@ export interface View {
 export interface RenderContext {
   view: View;
   grid: GridMesh;
+  /** Repeat the world along this vector, or null for one copy only. */
+  wrap: WrapSpec | null;
 }
 
 /**

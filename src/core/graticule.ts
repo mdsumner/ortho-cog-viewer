@@ -9,6 +9,7 @@
  */
 
 import proj4 from 'proj4';
+import { WrapSpec } from './wrap';
 
 export interface GraticuleGeometry {
   /** xyz pairs for gl.LINES */
@@ -21,6 +22,10 @@ export interface GraticuleOptions {
   stepDeg?: number;     // spacing between lines
   sampleDeg?: number;   // spacing between samples along a line
   tolerance?: number;   // round-trip tolerance in display units
+  /** Repeat the lines for copies kMin..kMax of the world along wrap. */
+  wrap?: WrapSpec | null;
+  kMin?: number;
+  kMax?: number;
 }
 
 export function buildGraticule(displayCRS: string, opts: GraticuleOptions = {}): GraticuleGeometry {
@@ -92,5 +97,22 @@ export function buildGraticule(displayCRS: string, opts: GraticuleOptions = {}):
     emit(pts, lat === 0 ? major : minor);
   }
 
+  const w = opts.wrap;
+  if (w && (opts.kMin ?? 0) <= (opts.kMax ?? 0) && !((opts.kMin ?? 0) === 0 && (opts.kMax ?? 0) === 0)) {
+    const copies = (src: number[]): Float32Array => {
+      const kMin = opts.kMin ?? 0, kMax = opts.kMax ?? 0;
+      const out = new Float32Array(src.length * (kMax - kMin + 1));
+      let n = 0;
+      for (let k = kMin; k <= kMax; k++) {
+        for (let i = 0; i < src.length; i += 3) {
+          out[n++] = src[i] + k * w.tx;
+          out[n++] = src[i + 1] + k * w.ty;
+          out[n++] = src[i + 2];
+        }
+      }
+      return out;
+    };
+    return { minor: copies(minor), major: copies(major) };
+  }
   return { minor: new Float32Array(minor), major: new Float32Array(major) };
 }

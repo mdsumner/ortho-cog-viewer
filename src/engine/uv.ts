@@ -10,6 +10,7 @@
 
 import proj4 from 'proj4';
 import { SourceBounds } from '../core/bounds';
+import { WrapSpec, copyIndex } from '../core/wrap';
 
 
 export interface MaskedTextureCoords {
@@ -40,7 +41,8 @@ export function computeTextureCoordsMasked(
   displayCRS: string,
   sourceCRS: string,
   sourceBounds: SourceBounds,
-  tolerance: number
+  tolerance: number,
+  wrap: WrapSpec | null = null
 ): MaskedTextureCoords {
   const numVertices = positions.length / 3;
   const texCoords = new Float32Array(numVertices * 2);
@@ -60,8 +62,15 @@ export function computeTextureCoordsMasked(
   let dMinX = Infinity, dMinY = Infinity, dMaxX = -Infinity, dMaxY = -Infinity;
 
   for (let i = 0; i < numVertices; i++) {
-    const dx = positions[i * 3 + 0];
-    const dy = positions[i * 3 + 1];
+    let dx = positions[i * 3 + 0];
+    let dy = positions[i * 3 + 1];
+    if (wrap) {
+      // Reduce into the base copy; a point in a gap between copies fails
+      // the round trip below just as a point off the globe does.
+      const k = copyIndex(wrap, dx, dy);
+      dx -= k * wrap.tx;
+      dy -= k * wrap.ty;
+    }
 
     let ok = false;
     let u = -1, v = -1;
@@ -159,9 +168,10 @@ export function buildLayerGeometry(
   sourceCRS: string,
   sourceBounds: SourceBounds,
   tolerance: number,
-  wrapU: boolean
+  wrapU: boolean,
+  wrap: WrapSpec | null = null
 ): LayerGeometry {
-  const masked = computeTextureCoordsMasked(positions, displayCRS, sourceCRS, sourceBounds, tolerance);
+  const masked = computeTextureCoordsMasked(positions, displayCRS, sourceCRS, sourceBounds, tolerance, wrap);
   const { texCoords: uv, valid } = masked;
 
   const maxTris = indices.length / 3;
