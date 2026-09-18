@@ -5,6 +5,8 @@
  * Designed to work alongside deck.gl (sharing the canvas).
  */
 
+import { RGBAImage } from '../core/source';
+
 export interface MeshData {
   positions: Float32Array;  // xyz per vertex
   texCoords: Float32Array;  // uv per vertex
@@ -407,12 +409,12 @@ export class MeshRenderer {
     this.indexCount = 0;
   }
 
-  setTexture(image: HTMLImageElement | HTMLCanvasElement): void {
+  setTexture(image: RGBAImage): void {
     const gl = this.gl;
 
     this.texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, image.data);
 
     // Use linear filtering for smooth interpolation
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -496,7 +498,7 @@ export class MeshRenderer {
     this.opacity = Math.max(0, Math.min(1, o));
   }
 
-  updateTexture(image: HTMLImageElement | HTMLCanvasElement): void {
+  updateTexture(image: RGBAImage): void {
     const gl = this.gl;
     this.numeric = false;
 
@@ -506,7 +508,7 @@ export class MeshRenderer {
     }
 
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, image.data);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }

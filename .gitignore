@@ -5,3 +5,4 @@ dist/
 .Rproj.user/
 *.Rproj
 public/proj-wasm/
+public/worker-smoke/

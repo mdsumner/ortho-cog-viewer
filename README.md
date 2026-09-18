@@ -314,6 +314,28 @@ is another sinusoid), not a copy. The Mercator case is the only one where
 the two agree. Also worth knowing: proj4js's `cea` returns NaN without
 `+lat_ts`, so a bare `+proj=cea` reports no repeat for that reason alone.
 
+### core/ is worker-safe
+
+Everything under `src/core/` runs without a DOM: no `document`, no `window`,
+no `Image`, no `HTMLCanvasElement` in a result. A source's `fetch()` returns
+plain buffers (`rgba: {data, width, height}` or `float: {...}`), tiles are
+decoded with `fetch` + `createImageBitmap` and assembled on an
+`OffscreenCanvas` (a DOM canvas is the fallback where that does not exist),
+and proj-wasm's folder is configured with `setProjWasmBase()` when there is
+no page to be relative to. The one exception is `wmts.ts`, which uses
+`DOMParser` for GetCapabilities and is main-thread only; what it produces is
+plain data a worker can be handed.
+
+This is what lets a warp engine, or PROJ executing the mesh, live in a
+worker later without the sources being rewritten. Two checks keep it so:
+
+- `node tools/check-worker-core.mjs` greps `core/` for DOM globals (fails on
+  any) and bundles `tools/worker-smoke/worker.ts`, which opens a COG and a
+  tile pyramid, fetches from both, resolves a code through PROJ-in-wasm,
+  and reports - all inside a real Web Worker.
+- `python3 tools/check-worker-core.py` runs that in headless Chromium
+  (`pnpm run check-worker` does both, after a `pnpm build`).
+
 ### Seams and poles
 
 A global lon/lat source has two failure modes for UV interpolation: a
@@ -434,6 +456,8 @@ src/core/            What a layer is, independent of drawing
 tools/check-crs.py   Checks crs.ts against PROJ's EPSG database
 tools/proj-wasm-engine.mjs   proj-wasm as an engine for check-crs.py
 tools/check-projections.py   Holds projections.ts to PROJ on a global grid
+tools/check-worker-core.mjs  Guards core/ against DOM use; bundles the worker smoke test
+tools/check-worker-core.py   Runs the worker smoke test in headless Chromium
 tools/bundle-proj-wasm.mjs   Lays proj-wasm out in public/proj-wasm/
 ```
 

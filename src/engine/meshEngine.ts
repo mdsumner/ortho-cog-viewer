@@ -141,9 +141,9 @@ export class MeshEngine implements LayerEngine {
           (b.maxY - b.minY) / f.height * k,
           geo, b.minY, b.maxY
         );
-      } else if (data.canvas) {
-        this.texSize = `${data.canvas.width}x${data.canvas.height}`;
-        this.renderer.updateTexture(data.canvas);
+      } else if (data.rgba) {
+        this.texSize = `${data.rgba.width}x${data.rgba.height}`;
+        this.renderer.updateTexture(data.rgba);
       }
       this.hasTexture = true;
       this.layout(ctx);   // UVs are relative to the new texture bounds

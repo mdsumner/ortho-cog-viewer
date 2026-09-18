@@ -30,9 +30,22 @@ interface Engine {
 
 let engine: Promise<Engine> | null = null;
 
-/** Where the bundled folder lives, relative to the page. */
+let configuredBase: string | null = null;
+
+/**
+ * Where the bundled folder lives. On the main thread it defaults to
+ * proj-wasm/ next to the page; a worker has no page, so whoever spawns it
+ * says (a worker's own location is its script, not the site).
+ */
+export function setProjWasmBase(url: string): void {
+  configuredBase = url;
+  engine = null;
+}
+
 function folderURL(): string {
-  return new URL('proj-wasm/', document.baseURI).href;
+  if (configuredBase) return configuredBase;
+  if (typeof document !== 'undefined') return new URL('proj-wasm/', document.baseURI).href;
+  throw new Error('proj-wasm folder not configured: call setProjWasmBase() in a worker');
 }
 
 async function load(): Promise<Engine> {

@@ -5,7 +5,7 @@
  */
 
 import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
-import { RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
+import { RGBAImage, RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
 import { SourceBounds } from './bounds';
 import { resolveCRS, defineCRS, unknownCRSMessage, normaliseDefinition } from './crs';
 
@@ -37,10 +37,10 @@ function clampByte(v: number): number {
 }
 
 /**
- * Interleaved samples -> RGBA canvas. Bands beyond the first three are
+ * Interleaved samples -> RGBA buffer. Bands beyond the first three are
  * ignored except a fourth, which is taken as alpha. Single band is grey.
  */
-function toCanvas(data: ArrayLike<number>, width: number, height: number, spp: number): HTMLCanvasElement {
+function toRGBA(data: ArrayLike<number>, width: number, height: number, spp: number): RGBAImage {
   const rgba = new Uint8ClampedArray(width * height * 4);
   const n = width * height;
   if (spp >= 3) {
@@ -59,14 +59,7 @@ function toCanvas(data: ArrayLike<number>, width: number, height: number, spp: n
       rgba[i * 4 + 3] = 255;
     }
   }
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = height;
-  const ctx = c.getContext('2d')!;
-  const img = ctx.createImageData(width, height);
-  img.data.set(rgba);
-  ctx.putImageData(img, 0, 0);
-  return c;
+  return { data: rgba, width, height };
 }
 
 /**
@@ -344,7 +337,7 @@ export class COGSource implements RasterSource {
     console.log(`COG fetch level ${level} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
     const rasters = await image.readRasters(opts as any);
     const data = rasters as unknown as ArrayLike<number>;
-    const canvas = toCanvas(data, outW, outH, image.getSamplesPerPixel());
-    return { canvas, bounds };
+    const rgba = toRGBA(data, outW, outH, image.getSamplesPerPixel());
+    return { rgba, bounds };
   }
 }

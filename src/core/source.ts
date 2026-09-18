@@ -11,6 +11,16 @@
 
 import { SourceBounds } from './bounds';
 
+/**
+ * An 8-bit RGBA image as a plain buffer. Nothing here is a DOM object: a
+ * source can run in a worker and hand its result across as a transferable.
+ */
+export interface RGBAImage {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
 export interface SourceLevel {
   index: number;
   resolution: number;   // source units per pixel
@@ -30,7 +40,7 @@ export interface FloatStats {
 
 export interface TextureData {
   /** RGBA image, for picture-like sources */
-  canvas?: HTMLCanvasElement;
+  rgba?: RGBAImage;
   /** single-band numeric data, for colour mapping on the GPU */
   float?: { data: Float32Array; width: number; height: number; channels: 1 | 3; nodata: number | null; stats: FloatStats };
   bounds: SourceBounds;  // extent of the texture in source CRS units
@@ -46,11 +56,11 @@ export interface RasterSource {
   /** True when the x axis is periodic (a source spanning all longitudes). */
   readonly wrapU: boolean;
   readonly attribution?: string;
-  /** true when fetch() returns float data rather than a canvas */
+  /** true when fetch() returns float data rather than an RGBA image */
   readonly numeric: boolean;
   /**
    * Fetch a texture covering at least `region` at `level`. The returned
-   * bounds may be larger than asked (snapped to tiles) and the canvas is
+   * bounds may be larger than asked (snapped to tiles) and the image is
    * never larger than maxDim on a side.
    */
   fetch(level: number, region: SourceBounds, maxDim: number): Promise<TextureData>;

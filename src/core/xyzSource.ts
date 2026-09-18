@@ -13,7 +13,7 @@
  * replaced by the matrix identifier, which is not always an integer.
  */
 
-import { RasterSource, SourceLevel, TextureData, intersect } from './source';
+import { RGBAImage, RasterSource, SourceLevel, TextureData, intersect } from './source';
 import { SourceBounds } from './bounds';
 import { TileMatrix, TileMatrixSetDef, loadWMTS, splitCapabilitiesUrl } from './wmts';
 
@@ -128,14 +128,46 @@ export function guessScheme(template: string): TileMatrixSetDef {
   return SCHEMES.GoogleMapsCompatible(lvl ? parseInt(lvl[1]) : 18);
 }
 
-function loadImage(url: string): Promise<HTMLImageElement | null> {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
+/**
+ * Fetch and decode one tile. fetch + createImageBitmap rather than an
+ * HTMLImageElement: it works in a worker, and decoding happens off the
+ * thread that called it either way. Null for any failure (a missing tile,
+ * a CORS refusal, a broken image) so one bad tile leaves a hole, not an
+ * error.
+ */
+async function loadTile(url: string): Promise<ImageBitmap | null> {
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await createImageBitmap(blob);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A 2D drawing surface wherever we are: OffscreenCanvas in a worker (or a
+ * modern main thread), a DOM canvas as the fallback.
+ */
+function makeSurface(width: number, height: number): OffscreenCanvas | HTMLCanvasElement {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(width, height);
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  return c;
+}
+
+function surfaceContext(s: OffscreenCanvas | HTMLCanvasElement): OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D {
+  const ctx = (s as OffscreenCanvas).getContext('2d') as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
+  if (!ctx) throw new Error('no 2D context for tile assembly');
+  return ctx;
+}
+
+function readRGBA(ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
+                  x: number, y: number, w: number, h: number): RGBAImage {
+  const img = ctx.getImageData(x, y, w, h);
+  return { data: img.data, width: w, height: h };
 }
 
 /**
@@ -268,17 +300,19 @@ export class XYZSource implements RasterSource {
     }
 
     const nx = c1 - c0 + 1, ny = r1 - r0 + 1;
-    const canvas = document.createElement('canvas');
-    canvas.width = nx * m.tileW;
-    canvas.height = ny * m.tileH;
-    const ctx = canvas.getContext('2d')!;
+    const fullW = nx * m.tileW, fullH = ny * m.tileH;
+    const surface = makeSurface(fullW, fullH);
+    const ctx = surfaceContext(surface);
 
     console.log(`XYZ fetch ${m.id} cols ${c0}-${c1} rows ${r0}-${r1} (${nx * ny} tiles)`);
     const jobs: Promise<void>[] = [];
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        jobs.push(loadImage(this.tileUrl(m, c, r)).then(img => {
-          if (img) ctx.drawImage(img, (c - c0) * m.tileW, (r - r0) * m.tileH, m.tileW, m.tileH);
+        jobs.push(loadTile(this.tileUrl(m, c, r)).then(img => {
+          if (img) {
+            ctx.drawImage(img, (c - c0) * m.tileW, (r - r0) * m.tileH, m.tileW, m.tileH);
+            img.close();
+          }
         }));
       }
     }
@@ -302,14 +336,10 @@ export class XYZSource implements RasterSource {
         const sy = Math.round((bounds.maxY - crop.maxY) / m.resolution);
         const sw = Math.max(1, Math.round((crop.maxX - crop.minX) / m.resolution));
         const sh = Math.max(1, Math.round((crop.maxY - crop.minY) / m.resolution));
-        const cropped = document.createElement('canvas');
-        cropped.width = sw;
-        cropped.height = sh;
-        cropped.getContext('2d')!.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-        return { canvas: cropped, bounds: crop };
+        return { rgba: readRGBA(ctx, sx, sy, sw, sh), bounds: crop };
       }
     }
 
-    return { canvas, bounds };
+    return { rgba: readRGBA(ctx, 0, 0, fullW, fullH), bounds };
   }
 }

@@ -8,7 +8,8 @@
     "prebuild": "node tools/bundle-proj-wasm.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check-crs": "python3 tools/check-crs.py --engine 'node tools/proj-wasm-engine.mjs'"
+    "check-crs": "python3 tools/check-crs.py --engine 'node tools/proj-wasm-engine.mjs'",
+    "check-worker": "node tools/check-worker-core.mjs && python3 tools/check-worker-core.py"
   },
   "dependencies": {
     "geotiff": "^2.1.4-beta.1",
