@@ -14,7 +14,7 @@
  */
 
 import { RasterSource, SourceLevel, TextureData, intersect } from './source';
-import { SourceBounds } from './uv';
+import { SourceBounds } from './bounds';
 import { TileMatrix, TileMatrixSetDef, loadWMTS, splitCapabilitiesUrl } from './wmts';
 
 const MERC = 20037508.342789244;

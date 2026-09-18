@@ -6,7 +6,7 @@
 
 import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
 import { RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
-import { SourceBounds } from './uv';
+import { SourceBounds } from './bounds';
 import { resolveCRS, defineCRS, unknownCRSMessage } from './crs';
 
 // One open handle per URL; the promise is cached so concurrent opens share it.

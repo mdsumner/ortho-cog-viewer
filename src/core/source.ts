@@ -9,7 +9,7 @@
  * display-CRS code knows the difference.
  */
 
-import { SourceBounds } from './uv';
+import { SourceBounds } from './bounds';
 
 export interface SourceLevel {
   index: number;

@@ -8,7 +8,7 @@
  * always integers), and {z} is substituted with the identifier.
  */
 
-import { SourceBounds, transformBounds } from './uv';
+import { SourceBounds, transformBounds } from './bounds';
 import { parseFragment } from './source';
 import { ensureCRS, resolveCRS } from './crs';
 

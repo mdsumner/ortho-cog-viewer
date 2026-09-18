@@ -3,7 +3,11 @@
  *
  * Multi-layer COG viewer with arbitrary source CRS -> arbitrary display CRS.
  *
- * Two view modes share the same renderer, loader and UV machinery:
+ * The shell: view modes, the layer list, styling state, the UI and URL
+ * state. A layer's pixels belong to its engine (see engine/types.ts), so
+ * everything here is independent of how a layer is actually drawn.
+ *
+ * Two view modes share the same engines, loaders and UI:
  *
  *   fixed    A static display CRS and mesh extent; a camera pans/zooms over it.
  *            This is the original design.
@@ -13,21 +17,20 @@
  *            and panning moves the projection centre. See centred.ts.
  */
 
-import { generateGridMesh, GridMesh } from './mesh';
-import { buildLayerGeometry, transformBounds, SourceBounds } from './uv';
-import { registerProjections } from './crs';
-import { RasterSource, planFetch, contains, parseFragment, formatFragment } from './source';
-import { COGSource, splitCogUrl } from './cogSource';
-import { COLORMAPS, colormapBytes, colormapCss, colormapRange, isColormapName } from './colormap';
-import { FloatStats } from './source';
-import { XYZSource, TILE_PRESETS, isTileTemplate } from './xyzSource';
-import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './wmts';
-import { ensureCRS, resolveCRS, unknownCRSMessage } from './crs';
-import { MeshRenderer } from './MeshRenderer';
-import { LineRenderer } from './LineRenderer';
-import { buildGraticule } from './graticule';
+import { generateGridMesh, GridMesh } from './engine/mesh';
+import { transformBounds } from './core/bounds';
+import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage } from './core/crs';
+import { RasterSource, parseFragment, formatFragment } from './core/source';
+import { COGSource, splitCogUrl } from './core/cogSource';
+import { COLORMAPS, colormapCss, colormapRange, isColormapName } from './core/colormap';
+import { XYZSource, TILE_PRESETS, isTileTemplate } from './core/xyzSource';
+import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './core/wmts';
+import { LineRenderer } from './engine/LineRenderer';
+import { buildGraticule } from './core/graticule';
 import { ViewController, ViewState } from './ViewController';
-import { CENTRED_PRESETS, centredCRS, hasPlaceholders, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './centred';
+import { CENTRED_PRESETS, centredCRS, hasPlaceholders, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './core/centred';
+import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
+import { MeshEngine } from './engine/meshEngine';
 import proj4 from 'proj4';
 
 registerProjections();
@@ -72,28 +75,14 @@ let centredOriginY = 0;
 let meshOriginX = NaN;
 let meshOriginY = NaN;
 
-// Layer state
+// Layer state. The pixels belong to the engine; everything here is the
+// shell's business: identity, how the user wants it styled, opacity.
 interface Layer {
   id: number;
   url: string;
   source: RasterSource;
-  renderer: MeshRenderer;
-  /** extent of the texture currently on the GPU, in source CRS */
-  texBounds: SourceBounds;
-  texLevel: number;
-  texSize: string;
-  hasTexture: boolean;
-  isLoading: boolean;
-  fetchSeq: number;
-  /** the request in flight, so an identical plan is not issued twice */
-  pending: { level: number; region: SourceBounds } | null;
-  validFraction: number;
-  /** what the last mesh build said the view needs */
-  needBBox: SourceBounds | null;
-  needPx: { w: number; h: number } | null;
-  /** numeric layers: colour scaling state */
+  engine: LayerEngine;
   scale: ScaleState | null;
-  stats: FloatStats | null;
   opacity: number;
 }
 
@@ -102,28 +91,15 @@ function fragmentParams(url: string): Map<string, string> {
   return parseFragment(url);
 }
 
-type Curve = 'linear' | 'sqrt' | 'log';
-
-/** Rendering state of a numeric layer. Everything here is a uniform. */
-interface ScaleState {
-  mode: 'single' | 'rgb';
-  min: number;
-  max: number;
-  cmap: string;
-  curve: Curve;
-  /** range follows the 2-98 percentile of each fetched window */
+/**
+ * A layer's Style plus the two policies the shell applies on top of it:
+ * whether the range follows each fetched window's 2-98 percentile, and
+ * whether nodata comes from the file's own tag.
+ */
+interface ScaleState extends Style {
   auto: boolean;
-  /** nodata override (null = use the file's) */
-  nodata: number | null;
   nodataAuto: boolean;
-  shade: boolean;
-  shadeStrength: number;
-  zfactor: number;
-  azimuth: number;
-  altitude: number;
 }
-
-const MAX_TEXTURE_DIM = 4096;
 
 let layers: Layer[] = [];
 let nextLayerId = 0;
@@ -188,6 +164,48 @@ function updateCentredOrigin(): void {
 }
 
 /**
+ * The view an engine should draw: the camera in display space, plus the
+ * canvas it has to fill.
+ */
+function currentView(state: ViewState): View {
+  return {
+    crs: currentDisplayCRS(),
+    centreX: state.centerX + centredOriginX,
+    centreY: state.centerY + centredOriginY,
+    zoom: state.zoom,
+    width: canvas.clientWidth,
+    height: canvas.clientHeight
+  };
+}
+
+function contextFor(state: ViewState): RenderContext {
+  return { view: currentView(state), grid: baseMesh };
+}
+
+/** The Style a layer's engine should use, from the shell's own state. */
+function styleOf(layer: Layer): Style {
+  const base = layer.scale ?? defaultStyle();
+  return { ...base, opacity: layer.opacity };
+}
+
+/**
+ * An engine reports that something changed: it started loading, or new
+ * pixels arrived. Applying the auto range needs the statistics of what just
+ * loaded, so it belongs here rather than in the engine.
+ */
+function onEngineChange(layer: Layer): void {
+  const stats = layer.engine.status().stats;
+  if (layer.scale && layer.scale.auto && stats && stats.count > 0 &&
+      (layer.scale.min !== stats.p2 || layer.scale.max !== stats.p98)) {
+    layer.scale.min = stats.p2;
+    layer.scale.max = stats.p98;
+    layer.engine.setStyle(styleOf(layer));
+  }
+  updateUI();
+  render(viewController.getState());
+}
+
+/**
  * Rebuild the base mesh for the current mode.
  *
  * fixed:   the configured extent, gridSize x gridSize.
@@ -233,51 +251,6 @@ function updateVertexCount(): void {
 }
 
 /**
- * Recompute UVs (and the validity-filtered index buffer) for a layer.
- */
-function updateLayerMesh(layer: Layer): void {
-  const crs = currentDisplayCRS();
-  const wrapU = textureWrapsU(layer);
-  const geom = buildLayerGeometry(
-    baseMesh.positions,
-    baseMesh.indices,
-    crs,
-    layer.source.crs,
-    layer.texBounds,
-    meshCellSize() * 1e-2,
-    wrapU
-  );
-  layer.validFraction = geom.validFraction;
-  layer.needBBox = geom.sourceBBox;
-  if (geom.displayBBox) {
-    const scale = Math.pow(2, viewController.getState().zoom);
-    layer.needPx = {
-      w: Math.max(1, (geom.displayBBox.maxX - geom.displayBBox.minX) * scale),
-      h: Math.max(1, (geom.displayBBox.maxY - geom.displayBBox.minY) * scale)
-    };
-  } else {
-    layer.needPx = null;
-  }
-  layer.renderer.setWrapU(wrapU);
-  layer.renderer.setMesh({
-    positions: geom.positions,
-    texCoords: geom.texCoords,
-    indices: geom.indices
-  });
-}
-
-/**
- * u is periodic only when the source is periodic AND the texture on the GPU
- * spans the source's full width.
- */
-function textureWrapsU(layer: Layer): boolean {
-  if (!layer.source.wrapU) return false;
-  const full = layer.source.bounds.maxX - layer.source.bounds.minX;
-  const tex = layer.texBounds.maxX - layer.texBounds.minX;
-  return tex >= full * 0.999;
-}
-
-/**
  * Rebuild the graticule if the display CRS changed since it was last built.
  */
 function updateGraticule(): void {
@@ -290,12 +263,13 @@ function updateGraticule(): void {
   graticuleCRS = crs;
 }
 
-function updateAllLayerMeshes(): void {
+function layoutAllLayers(): void {
+  const ctx = contextFor(viewController.getState());
   for (const layer of layers) {
     try {
-      updateLayerMesh(layer);
+      layer.engine.layout(ctx);
     } catch (err) {
-      console.error(`Failed to update layer ${layer.id}:`, err);
+      console.error(`Failed to lay out layer ${layer.id}:`, err);
     }
   }
 }
@@ -338,10 +312,10 @@ function handleViewChange(state: ViewState): void {
         centredOriginX !== meshOriginX || centredOriginY !== meshOriginY) {
       regenerateMesh(state);
     }
-    updateAllLayerMeshes();
+    layoutAllLayers();
   }
   render(state);
-  scheduleOverviewUpdates(state);
+  scheduleRefresh(state);
   scheduleUrlUpdate();
 }
 
@@ -397,7 +371,7 @@ async function applyDisplaySettings(): Promise<void> {
     meshExtent = { minX: xmin, minY: ymin, maxX: xmax, maxY: ymax };
 
     regenerateMesh();
-    updateAllLayerMeshes();
+    layoutAllLayers();
 
     const centerX = (xmin + xmax) / 2;
     const centerY = (ymin + ymax) / 2;
@@ -488,32 +462,11 @@ async function addLayer(url: string): Promise<Layer | null> {
   console.log('Adding layer:', url);
   try {
     const source = await openSource(url);
-    const renderer = new MeshRenderer(gl);
 
-    const layer: Layer = {
-      id: nextLayerId++,
-      url,
-      source,
-      renderer,
-      texBounds: { ...source.bounds },
-      texLevel: -1,
-      texSize: '',
-      hasTexture: false,
-      isLoading: false,
-      fetchSeq: 0,
-      pending: null,
-      validFraction: 0,
-      needBBox: null,
-      needPx: null,
-      scale: null,
-      stats: null,
-      opacity: 1
-    };
+    // Styling state first: the engine is constructed with it.
     const alpha = parseFloat(fragmentParams(url).get('alpha') || '');
-    if (isFinite(alpha)) {
-      layer.opacity = Math.max(0, Math.min(1, alpha));
-      renderer.setOpacity(layer.opacity);
-    }
+    const opacity = isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+    let scale: ScaleState | null = null;
     if (source.numeric) {
       const o = splitCogUrl(url);
       const cog = source as COGSource;
@@ -521,7 +474,7 @@ async function addLayer(url: string): Promise<Layer | null> {
       const pinned = colormapRange(cmap);
       const explicit = o.min !== undefined && o.max !== undefined;
       const curve: Curve = o.curve === 'sqrt' || o.curve === 'log' ? o.curve : 'linear';
-      layer.scale = {
+      scale = {
         mode: cog.rgbBands ? 'rgb' : 'single',
         min: pinned ? pinned[0] : (o.min ?? 0),
         max: pinned ? pinned[1] : (o.max ?? 1),
@@ -534,20 +487,26 @@ async function addLayer(url: string): Promise<Layer | null> {
         shadeStrength: o.shade ?? 0.6,
         zfactor: o.zf ?? 1,
         azimuth: o.az ?? 315,
-        altitude: o.alt ?? 45
+        altitude: o.alt ?? 45,
+        opacity
       };
-      renderer.setColormap(colormapBytes(cmap));
-      renderer.setRange(layer.scale.min, layer.scale.max);
-      renderer.setCurve(curve);
-      const sc = layer.scale;
-      renderer.setHillshade(sc.shade, sc.shadeStrength, sc.zfactor, sc.azimuth, sc.altitude);
     }
 
-    updateLayerMesh(layer);
+    const layer = {
+      id: nextLayerId++,
+      url,
+      source,
+      scale,
+      opacity
+    } as Layer;
+    layer.engine = new MeshEngine(gl, source, styleOf(layer), () => onEngineChange(layer));
+
+    const ctx = contextFor(viewController.getState());
+    layer.engine.layout(ctx);
     layers.push(layer);
     updateUI();
 
-    await updateLayerTexture(layer);
+    await layer.engine.refresh(ctx);
     render(viewController.getState());
     scheduleUrlUpdate();
     return layer;
@@ -560,7 +519,7 @@ async function addLayer(url: string): Promise<Layer | null> {
 
 function removeLayer(id: number): void {
   const layer = layers.find(l => l.id === id);
-  if (layer) layer.renderer.dispose();
+  if (layer) layer.engine.dispose();
   layers = layers.filter(l => l.id !== id);
   updateUI();
   render(viewController.getState());
@@ -568,79 +527,20 @@ function removeLayer(id: number): void {
 }
 
 function clearLayers(): void {
-  for (const l of layers) l.renderer.dispose();
+  for (const l of layers) l.engine.dispose();
   layers = [];
 }
 
 /**
- * Fetch the texture region the current view needs, if it differs from what
- * is already on the GPU. Responses that arrive after a newer request are
- * dropped.
+ * Engines may have to fetch or compute to serve a new view, so that is
+ * debounced while the view is still moving.
  */
-async function updateLayerTexture(layer: Layer): Promise<void> {
-  const plan = planFetch(layer.source, layer.needBBox, layer.needPx, MAX_TEXTURE_DIM);
-  if (!plan) return;
-
-  if (layer.hasTexture && plan.level.index === layer.texLevel && contains(layer.texBounds, plan.need)) {
-    return;  // current texture already covers the need at the right level
-  }
-  if (layer.pending && layer.pending.level === plan.level.index && contains(layer.pending.region, plan.need)) {
-    return;  // a request that will cover it is already in flight
-  }
-
-  const seq = ++layer.fetchSeq;
-  layer.pending = { level: plan.level.index, region: plan.region };
-  layer.isLoading = true;
-  updateUI();
-  try {
-    const data = await layer.source.fetch(plan.level.index, plan.region, MAX_TEXTURE_DIM);
-    if (seq !== layer.fetchSeq) return;  // superseded
-    layer.texBounds = data.bounds;
-    layer.texLevel = plan.level.index;
-    if (data.float) {
-      const f = data.float;
-      layer.texSize = `${f.width}x${f.height}`;
-      layer.stats = f.stats;
-      layer.renderer.updateFloatTexture(f.data, f.width, f.height, f.nodata, f.channels);
-      {
-        const b = data.bounds;
-        const geo = /4326|4269|longlat/.test(layer.source.crs);
-        const k = geo ? 111319.49 : 1;   // degrees -> metres (x is scaled by cos(lat) in the shader)
-        layer.renderer.setTexelGeometry(
-          f.width, f.height,
-          (b.maxX - b.minX) / f.width * k,
-          (b.maxY - b.minY) / f.height * k,
-          geo, b.minY, b.maxY
-        );
-      }
-      if (layer.scale && layer.scale.auto && f.stats.count > 0) {
-        layer.scale.min = f.stats.p2;
-        layer.scale.max = f.stats.p98;
-        layer.renderer.setRange(layer.scale.min, layer.scale.max);
-      }
-    } else if (data.canvas) {
-      layer.texSize = `${data.canvas.width}x${data.canvas.height}`;
-      layer.renderer.updateTexture(data.canvas);
-    }
-    layer.hasTexture = true;
-    updateLayerMesh(layer);   // UVs are relative to the new texture bounds
-    render(viewController.getState());
-  } catch (err) {
-    console.error('Failed to fetch texture:', err);
-  } finally {
-    if (seq === layer.fetchSeq) {
-      layer.pending = null;
-      layer.isLoading = false;
-      updateUI();
-    }
-  }
-}
-
 let updateTimeout: number | null = null;
-function scheduleOverviewUpdates(_state: ViewState): void {
+function scheduleRefresh(state: ViewState): void {
   if (updateTimeout) clearTimeout(updateTimeout);
   updateTimeout = window.setTimeout(() => {
-    layers.forEach(layer => updateLayerTexture(layer));
+    const ctx = contextFor(state);
+    layers.forEach(layer => layer.engine.refresh(ctx));
     updateTimeout = null;
   }, 150);
 }
@@ -746,33 +646,23 @@ function pickerSelectionUrl(): string {
 // ---------------------------------------------------------------------------
 
 function render(state: ViewState): void {
-  // In centred mode with a static CRS the mesh sits around the projected view
-  // centre rather than the origin; everywhere else centredOrigin is (0, 0).
-  const camX = state.centerX + centredOriginX;
-  const camY = state.centerY + centredOriginY;
+  const ctx = contextFor(state);
+  const { view } = ctx;
   gl.clearColor(0.1, 0.1, 0.1, 1.0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   for (const layer of layers) {
-    layer.renderer.renderWithViewport(
-      camX,
-      camY,
-      state.zoom,
-      canvas.clientWidth,
-      canvas.clientHeight
-    );
+    layer.engine.draw(ctx);
   }
   if (showGraticule) {
     updateGraticule();
-    gratMinor.render(camX, camY, state.zoom, [1, 1, 1, 0.25]);
-    gratMajor.render(camX, camY, state.zoom, [1, 1, 1, 0.6]);
+    gratMinor.render(view.centreX, view.centreY, view.zoom, [1, 1, 1, 0.25]);
+    gratMajor.render(view.centreX, view.centreY, view.zoom, [1, 1, 1, 0.6]);
   }
   if (showWireframe) {
     const colors: [number, number, number, number][] = [
       [1, 1, 0, 0.55], [0, 1, 1, 0.55], [1, 0.4, 1, 0.55], [0.5, 1, 0.5, 0.55]
     ];
-    layers.forEach((layer, i) => {
-      layer.renderer.renderWireframe(camX, camY, state.zoom, colors[i % colors.length]);
-    });
+    layers.forEach((layer, i) => layer.engine.drawWireframe(ctx, colors[i % colors.length]));
   }
   updateInfo(state);
 }
@@ -810,17 +700,18 @@ function formatRes(v: number): string {
 function updateUI(): void {
   layersEl.innerHTML = layers.map(layer => {
     const src = layer.source;
-    const res = layer.hasTexture ? src.levels[layer.texLevel].resolution : NaN;
+    const st8 = layer.engine.status();
+    const res = st8.hasTexture ? src.levels[st8.level].resolution : NaN;
     const unit = /4326|4269|longlat/.test(src.crs) ? 'deg' : 'm';
-    const lvl = layer.hasTexture ? `${formatUnits(res, unit)}/px ${layer.texSize}` : '...';
-    const loading = layer.isLoading ? ' (loading)' : '';
-    const pct = Math.round(layer.validFraction * 100);
+    const lvl = st8.hasTexture ? `${formatUnits(res, unit)}/px ${st8.textureSize}` : '...';
+    const loading = st8.loading ? ' (loading)' : '';
+    const pct = Math.round(st8.validFraction * 100);
     const attr = src.attribution ? `<div class="attribution">${src.attribution}</div>` : '';
     let scaleRow = '';
     if (layer.scale) {
       const sc = layer.scale;
       const cog = src as COGSource;
-      const st = layer.stats;
+      const st = layer.engine.status().stats;
       const n = cog.samplesPerPixel;
       const pinned = colormapRange(sc.cmap) !== null;
       const cmapOpts = Object.entries(COLORMAPS).map(([k, v]) =>
@@ -907,7 +798,7 @@ function drawHistogram(layer: Layer): void {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#1a1a1a';
   ctx.fillRect(0, 0, W, H);
-  const st = layer.stats;
+  const st = layer.engine.status().stats;
   if (!st || !st.count) return;
   const sc = layer.scale;
   // Axis spans the union of data range and current range so handles are visible
@@ -945,9 +836,10 @@ function drawHistogram(layer: Layer): void {
  * Drag the min/max handles on a histogram.
  */
 function histogramPointer(layer: Layer, canvas: HTMLCanvasElement, e: PointerEvent): void {
-  if (!layer.scale || !layer.stats || !layer.stats.count) return;
+  const st0 = layer.engine.status().stats;
+  if (!layer.scale || !st0 || !st0.count) return;
   if (colormapRange(layer.scale.cmap)) return;  // pinned palette
-  const st = layer.stats, sc = layer.scale;
+  const st = st0, sc = layer.scale;
   const rect = canvas.getBoundingClientRect();
   const toValue = (clientX: number) => {
     const lo = Math.min(st.min, sc.min), hi = Math.max(st.max, sc.max);
@@ -998,24 +890,25 @@ function applyScale(layer: Layer, partial: Partial<ScaleState> & { minmax?: bool
     sc.min = pinned[0];
     sc.max = pinned[1];
     sc.auto = false;
-  } else if (layer.stats && layer.stats.count) {
-    if (minmax) {
-      sc.min = layer.stats.min;
-      sc.max = layer.stats.max;
-      sc.auto = false;
-    } else if (sc.auto) {
-      sc.min = layer.stats.p2;
-      sc.max = layer.stats.p98;
+  } else {
+    const stats = layer.engine.status().stats;
+    if (stats && stats.count) {
+      if (minmax) {
+        sc.min = stats.min;
+        sc.max = stats.max;
+        sc.auto = false;
+      } else if (sc.auto) {
+        sc.min = stats.p2;
+        sc.max = stats.p98;
+      }
     }
   }
-  layer.renderer.setRange(sc.min, sc.max);
-  layer.renderer.setColormap(colormapBytes(sc.cmap));
-  layer.renderer.setCurve(sc.curve);
-  layer.renderer.setHillshade(sc.shade, sc.shadeStrength, sc.zfactor, sc.azimuth, sc.altitude);
+  // The source needs the nodata value too: it masks on the raw value as it
+  // reads, which the shader cannot do.
   const cog = layer.source as COGSource;
-  const nd = sc.nodataAuto ? cog.fileNodata : sc.nodata;
-  cog.nodata = nd;
-  layer.renderer.setNodata(nd);
+  cog.nodata = sc.nodataAuto ? cog.fileNodata : sc.nodata;
+  sc.nodata = cog.nodata;
+  layer.engine.setStyle(styleOf(layer));
   render(viewController.getState());
   if (updateUrl) scheduleUrlUpdate();
 }
@@ -1033,8 +926,8 @@ async function resetScale(layer: Layer): Promise<void> {
   const explicit = o.min !== undefined && o.max !== undefined;
   const wantMode: 'single' | 'rgb' = o.bands && cog.samplesPerPixel >= 3 ? 'rgb' : 'single';
   const wantBands = wantMode === 'rgb' ? o.bands!.map(b => b - 1) : [Math.max(0, (o.band || 1) - 1)];
-  layer.opacity = (() => { const a = parseFloat(fragmentParams(layer.url).get('alpha') || ''); return isFinite(a) ? a : 1; })();
-  layer.renderer.setOpacity(layer.opacity);
+  const a = parseFloat(fragmentParams(layer.url).get('alpha') || '');
+  layer.opacity = isFinite(a) ? a : 1;
   Object.assign(layer.scale, {
     min: pinned ? pinned[0] : (o.min ?? 0),
     max: pinned ? pinned[1] : (o.max ?? 1),
@@ -1074,11 +967,8 @@ async function changeBands(layer: Layer, mode: 'single' | 'rgb', bands: number[]
     cog.band = clamp(bands[0]);
   }
   layer.scale.mode = mode;
-  layer.hasTexture = false;
-  layer.texLevel = -1;
-  layer.fetchSeq++;          // drop anything in flight
-  layer.pending = null;
-  await updateLayerTexture(layer);
+  layer.engine.invalidate();
+  await layer.engine.refresh(contextFor(viewController.getState()));
   // stats changed with the new bands: the nodata may too, so recompute
   applyScale(layer, {});
   updateUI();
@@ -1425,7 +1315,7 @@ async function main() {
     const layer = layers.find(l => l.id === parseInt(id));
     if (!layer) return;
     layer.opacity = parseFloat(t.value);
-    layer.renderer.setOpacity(layer.opacity);
+    layer.engine.setStyle(styleOf(layer));
     const lbl = layersEl.querySelector(`[data-alpha-val="${layer.id}"]`);
     if (lbl) lbl.textContent = `${Math.round(layer.opacity * 100)}%`;
     render(viewController.getState());
