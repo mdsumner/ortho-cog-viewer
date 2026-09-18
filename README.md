@@ -202,6 +202,28 @@ pyproj (`pip install pyproj && python3 tools/check-crs.py`). It is how the
 EPSG:9354 error below was found, and it should be run after touching the
 table.
 
+#### Sharing a CRS with another engine
+
+One place decides what `EPSG:28355` means, and `crsDefinition(crs)` hands that
+same decision to anyone else: a proj4 string for a code, the string unchanged
+if the CRS already is one, or null if nothing here knows it. That covers the
+codes proj4js ships itself (the WGS84 UTM zones), whose parsed definition is
+recovered rather than re-invented, so what goes out is what this viewer is
+projecting with and not a plausible-looking near-miss.
+
+This matters for a second transform implementation - a GDAL or proj4rs warp
+engine in wasm, say, which cannot see proj4js's registry. It is handed the
+definition string, never the code.
+
+`check-crs.py` guards that handoff: projecting through `"EPSG:NNNN"` and
+through the string `crsDefinition` gives for it must agree to 1e-6 m, or the
+handoff is lossy and nothing downstream can be trusted. The check also takes
+`--engine './my-engine'` and drives an external implementation over a small
+JSON contract (documented at the top of the script) so a second engine can be
+compared against both PROJ and proj4js on the same points. Note that the
+contract is in degrees: proj4rs works in radians internally, which is exactly
+the sort of thing this is meant to catch.
+
 ### Seams and poles
 
 A global lon/lat source has two failure modes for UV interpolation: a

@@ -10,6 +10,11 @@
  *   3. Fetched from epsg.io at runtime (resolveCRS, async). Needs network and
  *      CORS from that host, so it is a convenience, not something to rely on.
  *
+ * Whatever the route, the definition string itself is kept (crsDefinition),
+ * because a second transform implementation - rwarp's proj4rs in wasm - has
+ * the same no-database problem and should be handed the same parameters
+ * rather than a code it would have to resolve for itself.
+ *
  * When all three fail, a layer URL can carry the definition itself:
  * `cog.tif#crs=+proj=utm +zone=55 +south +ellps=GRS80`. That is the escape
  * hatch for anything exotic, and it registers the definition under the
@@ -102,16 +107,58 @@ export function synthesiseCRS(crs: string): string | null {
     if (code < f.lo || code > f.hi) continue;
     const zone = code - f.base;
     if (zone < 1 || zone > 60) continue;
-    console.log(`${crs} synthesised as ${f.label} zone ${zone}`);
     return `+proj=utm +zone=${zone}${f.south ? ' +south' : ''} ${f.datum} +units=m +no_defs`;
   }
   return null;
 }
 
+/**
+ * The definition string behind every code registered so far.
+ *
+ * proj4.defs(code) hands back a parsed object, not the text it came from, so
+ * the text is kept here: it is what gets passed to another implementation.
+ */
+const definitions = new Map<string, string>();
+
+function register(code: string, def: string): void {
+  proj4.defs(code, def);
+  definitions.set(code, def);
+}
+
 export function registerProjections(): void {
   for (const [code, def] of Object.entries(DEFS)) {
-    proj4.defs(code, def);
+    register(code, def);
   }
+}
+
+/**
+ * The proj4 definition string for a CRS, ready to hand to another transform
+ * implementation. A CRS that is already a definition (a proj string, or WKT)
+ * is returned as it stands; a code returns whatever was registered for it,
+ * or null if nothing has been.
+ *
+ * This is the single authority the viewer intends to keep: one place decides
+ * what EPSG:28355 means, and every engine is given that same answer.
+ */
+export function crsDefinition(crs: string): string | null {
+  if (!crs) return null;
+  const t = crs.trim();
+  if (!/^EPSG:\d+$/i.test(t)) return t;   // already a definition
+
+  const known = definitions.get(t) ?? definitions.get(t.toUpperCase());
+  if (known) return known;
+
+  // proj4js ships definitions of its own - the WGS84 UTM zones among them -
+  // so a code can be perfectly usable here without ever passing through
+  // register(). Recover the string it parsed, so the definition handed out
+  // is the one this viewer is actually projecting with, and fall back to
+  // zone arithmetic if proj4 kept no string.
+  const parsed = proj4.defs(t) as { projStr?: string } | undefined;
+  const recovered = parsed && typeof parsed.projStr === 'string' && parsed.projStr
+    ? parsed.projStr
+    : synthesiseCRS(t);
+  if (recovered) definitions.set(t, recovered);
+  return recovered;
 }
 
 /**
@@ -120,7 +167,7 @@ export function registerProjections(): void {
  */
 export function defineCRS(code: string, def: string): boolean {
   try {
-    proj4.defs(code, def);
+    register(code, def);
     proj4(code, 'EPSG:4326');
     return true;
   } catch (err) {
@@ -137,7 +184,10 @@ export function ensureCRS(crs: string): boolean {
   if (!crs) return false;
   if (!proj4.defs(crs)) {
     const syn = synthesiseCRS(crs);
-    if (syn) proj4.defs(crs, syn);
+    if (syn) {
+      console.log(`${crs} synthesised as ${syn}`);
+      register(crs, syn);
+    }
   }
   try {
     proj4(crs, 'EPSG:4326');
