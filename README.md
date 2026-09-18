@@ -28,6 +28,18 @@ Fixed extent mode (a static display CRS with a camera over it, the original desi
 - [Antarctic Polar Stereographic, EPSG:3031, whole world](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3031&extent=-12000000,12000000,-12000000,12000000)
 - [S2 Tasmania tile (UTM 55S source) in EPSG:3577 Australian Albers](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3577&extent=1000000,1500000,-4900000,-4500000&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
 
+Tile servers (XYZ / WMTS) load the same way, from the presets dropdown or by
+pasting a `{z}/{x}/{y}` template into the URL box:
+
+- [Esri World Imagery on an orthographic globe](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&url=preset:esri-imagery)
+- [OpenStreetMap in Antarctic Polar Stereographic](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3031&extent=-6000000,6000000,-6000000,6000000&url=preset:osm)
+- [NASA GIBS sea ice concentration (EPSG:3857 tiles) on a south polar laea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=0,-90&zoom=-12.5&url=preset:gibs-bluemarble-3857&url=preset:gibs-seaice-3857)
+- [GIBS MODIS true colour (EPSG:4326 tiles) from Hobart, aeqd](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=aeqd&center=147.3,-42.9&zoom=-13&url=preset:gibs-modis-truecolor)
+- [GEBCO 2024 bathymetry, hillshaded, orthographic over Tasmania (COG on source.coop)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=preset:gebco-2024)
+- [GEBCO 2024 with the DiRT palette, south polar laea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=0,-90&zoom=-13&url=preset:gebco-2024-dirt)
+- [GHRSST MUR SST 2026-08-29 in degrees C (int16 COG with scale/offset)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&url=preset:mur-sst-20260829)
+- [LIST Tasmania 2026 aerial photo, from its WMTS GetCapabilities, on a laea centred on Hobart](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=147.33,-42.88&zoom=-6&url=preset:list-aerial-2026)
+
 ## The Core Idea
 
 Mesh vertices live in display space (any CRS). UV coordinates are computed by
@@ -60,9 +72,135 @@ This gives some nice properties for free:
   is a few thousand transforms for the default 64-wide grid
 
 Presets are in `centred.ts`. A custom template can be given with `{lon_0}` and
-`{lat_0}` placeholders, for example an oblique Mercator or a Cassini centred on
-the view. Note that proj4js does not default `x_0`/`y_0` and silently returns
+`{lat_0}` placeholders; anything with a centre parameter works, for example
+the `omerc` preset puts `{lon_0}` into `lonc`.
+
+A template with **no** placeholders is an ordinary fixed CRS - `EPSG:28355`,
+say - used in centred mode: the projection stays put and only the mesh
+follows the view, anchored at the projected view centre. That gives the
+centred-mode conveniences (a lon/lat centre you can type, panning that
+reports where you are) over a CRS that does not move, which is usually what
+you want for a projected grid like an MGA zone. Note that proj4js does not default `x_0`/`y_0` and silently returns
 NaN without them, so spell out `+x_0=0 +y_0=0`.
+
+### Sources: COGs and tile pyramids are the same thing
+
+A layer only needs four things from its source: a CRS, a full extent, a list
+of resolution levels, and a way to fetch a texture covering some region at
+some level (`source.ts`). A COG provides that through its overviews and a
+windowed `readRasters` (`cogSource.ts`); an XYZ/WMTS pyramid provides it
+through zoom levels and stitched tiles (`xyzSource.ts`). Nothing in the mesh,
+UV or display-CRS code knows the difference, and a tile pyramid in EPSG:3857
+or EPSG:4326 reprojects onto a globe exactly like a COG does.
+
+Fetches are viewport-restricted. The UV computation already visits every
+visible vertex, so it reports the source-space bounding box of the valid ones
+and their span in screen pixels. From those the viewer picks the coarsest
+level that still gives roughly one source pixel per screen pixel, pads the
+region by 25% so small pans do not refetch, snaps it to the source's tile
+grid and fetches only that. Textures are capped at 4096 px a side; a COG
+window that is still larger is downsampled on read, a tile request that is
+still larger is trimmed. This is also what makes full-resolution COGs work:
+zooming in reads a window of tiles at level 0 rather than the whole level.
+
+A tile source is a WMTS-style tile matrix set: per level an origin,
+resolution, tile size and matrix size (`xyzSource.ts`). Built-in schemes
+for `{z}/{x}/{y}` templates: `GoogleMapsCompatible` (Web Mercator, 256 px,
+one tile at z0) and the NASA GIBS EPSG:4326 sets (512 px, 2x1 at z0, padded
+past the world; `2km`..`250m` in the URL sets the finest level). A pasted
+template is matched against the presets and those patterns, otherwise
+assumed to be Web Mercator.
+
+**WMTS GetCapabilities** URLs are parsed directly (`wmts.ts`): the layer,
+style, format, RESTful `ResourceURL` template or KVP `GetTile` endpoint,
+every `TileMatrixSet` (any CRS proj4 can handle, `ScaleDenominator` to
+resolution via the OGC 0.28 mm pixel, lat/lon axis order for `urn:...:4326`),
+`TileMatrixSetLimits`, and the layer's `WGS84BoundingBox`, which clamps
+fetches so no tiles are requested outside the data. Esri's `default028mm`
+sets, whose matrices are cropped to the data per level, work as-is.
+
+Loading a capabilities URL with more than one layer (or a time dimension)
+opens a picker: a filterable layer list, the matrix sets that layer offers,
+and a time field filled from the layer's `Dimension` default (GIBS layers
+are daily, so any date in the advertised range works). The choice is encoded
+as `#layer=<id>&tms=<id>&time=<value>` on the capabilities URL, so it can be
+pasted, bookmarked, or passed as a `url=` parameter. Tile hosts need CORS; the presets are
+known to serve it. Mind each provider's usage policy and keep the
+attribution the layer list shows.
+
+### Numeric data
+
+A COG that is not a picture (fewer than three bands, more than 8 bits, or
+floating point) is treated as data: bands are read as float32, uploaded as
+`R32F` (single band) or `RGB32F` (composite) textures, and rescaled and
+colour mapped in the fragment shader. Min, max, curve, colormap and nodata
+are uniforms, so every control in the rendering panel is a redraw, not a
+refetch; only changing bands or mode reads data again. The panel follows the
+one on source.coop's COG previews (which is the deck.gl-raster lineage of
+doing raster operations on the GPU):
+
+- **mode** single band + colormap, or RGB composite with three band pickers
+  and a shared rescale (the way to look at 16-bit Sentinel-2 bands)
+- **histogram** of the fetched window with draggable min/max handles,
+  `2-98%` and `min/max` buttons; the range starts at 2-98% and follows the
+  window until you touch it
+- **curve** linear, sqrt or log
+- **nodata** from the GDAL tag (`auto`), or any value you type; NaN is always
+  masked
+- **colormaps** viridis, magma, inferno, turbo, cividis, grey, blues,
+  red-blue, bathymetry, flat, and **DiRT**, a value-anchored bathymetry/topography
+  palette (as used aboard RSV Nuyina) with colours fixed to depths from
+  -8000 m to +1000 m. Anchored palettes pin the range, so a colour always
+  means the same depth whatever the file's own range is.
+
+**Hillshade** is computed in the same fragment shader from the float texture:
+Horn's 3x3 slope and aspect using the texel's real ground size (degrees are
+converted to metres, x scaled by cos(latitude)), lit from a sun given by
+azimuth and altitude, multiplied into whatever palette is active. Strength,
+vertical exaggeration and sun position are uniforms, so they are live.
+`cmap=flat&shade=1` gives a plain hillshade. This is what makes an anchored
+bathymetry palette readable: colour says depth, shading says shape.
+
+GDAL scale/offset metadata is applied on read (nodata is matched on the raw
+value), and `#scale=&offset=` on the URL override it, which is how the MUR
+preset turns int16 Kelvin into degrees C. `reset` returns a layer to the
+styling it was loaded with (its URL fragment, or the defaults).
+
+Per-layer state rides on the URL fragment:
+`cog.tif#band=2&min=-2&max=30&cmap=turbo&curve=sqrt&nodata=-9999&shade=0.7&zf=3&az=315&alt=45`, or
+`cog.tif#bands=4,3,2&min=0&max=3000` for a composite (`rgb=1` forces the
+8-bit picture path).
+
+### Coordinate reference systems
+
+proj4js ships no EPSG database, so every code has to be defined before it can
+be used. `crs.ts` resolves one in three steps:
+
+1. a table of named definitions (polar stereographic including the NSIDC and
+   Australian Antarctic ones, EASE-Grid 2.0, Australian Albers and Lambert in
+   both GDA94 and GDA2020, NZTM, British National Grid, LAEA Europe, UPS, ...);
+2. zone arithmetic, for the families where the code number encodes the UTM
+   zone: WGS84 `326xx`/`327xx`, **GDA94 MGA `283xx`**, GDA2020 MGA `78xx`,
+   NAD83 `269xx`, ETRS89 `258xx`;
+3. a fetch from epsg.io at runtime, which needs network access and CORS from
+   that host, so it is a convenience rather than something to rely on.
+
+Failing all three, put the definition on the layer URL and it is registered
+under the source's own code, so later layers get it too:
+
+```
+cog.tif#crs=+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +x_0=2600000 +y_0=1200000 +ellps=bessel
+```
+
+The same works in the display CRS box: paste a proj4 string instead of a code.
+Datum shifts are the identity for the GRS80-based datums (GDA94, GDA2020,
+NAD83, ETRS89) - a metre or two against WGS84, well inside a screen pixel.
+
+`tools/check-crs.py` checks every definition against PROJ's own EPSG database
+by projecting sample points from each CRS's area of use with both proj4js and
+pyproj (`pip install pyproj && python3 tools/check-crs.py`). It is how the
+EPSG:9354 error below was found, and it should be run after touching the
+table.
 
 ### Seams and poles
 
@@ -76,6 +214,14 @@ span is still over half the texture, the ones containing a pole, are dropped.
 That leaves a hole about one mesh cell across at each pole; a finer grid
 shrinks it. Tick "show triangles" (or add `wire=1`) to see the mesh, the
 dropped pole triangles, and the rim where vertices fail the validity test.
+
+### Graticule
+
+A 10-degree graticule is projected through the display CRS on the CPU
+(`graticule.ts`) whenever the CRS changes, so in centred mode it is rebuilt
+every frame along with the UVs. Samples are validated with the same round-trip
+test as the mesh, and any segment more than 8x longer than the median segment
+on its line is a projection cut and is not drawn.
 
 ### Validity mask
 
@@ -91,14 +237,19 @@ percentage of vertices that survived.
 | param    | meaning                                                            |
 |----------|--------------------------------------------------------------------|
 | `mode`   | `fixed` or `centred`                                               |
-| `url`    | COG URL, repeatable for multiple layers                            |
+| `url`    | COG URL, a `{z}/{x}/{y}` tile template, or `preset:<name>`; repeatable |
 | `zoom`   | log2 of screen pixels per display unit                             |
 | `grid`   | mesh cells across (default 64)                                     |
 | `wire`   | `1` to draw the mesh triangles over the imagery                    |
+| `grat`   | `0` to hide the 10-degree graticule (on by default)                |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
-| `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`) or a template |
+| `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`), a template, or a fixed CRS |
 | `center` | centred mode: `lon,lat`; fixed mode: `x,y` in display units        |
+
+Any layer URL can carry `#alpha=0.6` for opacity and `#crs=<proj4>` to declare
+its CRS; it combines with the
+WMTS `layer=`/`tms=`/`time=` and numeric `band=`/`min=`/... fragment keys.
 
 The URL is rewritten as you pan and zoom, so the address bar is always a link
 to what you are looking at.
@@ -115,6 +266,7 @@ to what you are looking at.
 - Zoom-dependent overview selection
 - Multiple layers
 - Fixed and centred view modes, shareable URLs
+- XYZ/WMTS tile sources, viewport-restricted fetching for both COGs and tiles
 
 **No deck.gl** - pure WebGL2, ~195KB bundle.
 
@@ -135,16 +287,60 @@ them from a browser.
 
 ## Architecture
 
+Three layers, with the seam between the second and third the point of the
+whole arrangement:
+
 ```
-main.ts           - Entry point, view modes, layers, URL state
-ViewController.ts - Pan/zoom/touch input handling
-MeshRenderer.ts   - WebGL2 textured mesh renderer
-mesh.ts           - Grid generation
-uv.ts             - Inverse projection UV computation, validity mask
-centred.ts        - Centred-projection templates and pan-as-recentre
-cog.ts            - geotiff.js wrapper
-crs.ts            - proj4 definitions
+src/main.ts          The shell: view modes, layer list, styling state,
+                     controls, URL state. Knows nothing about how a layer
+                     is drawn.
+src/ViewController   Pan/zoom/touch input
+
+src/engine/          How a layer's pixels reach the screen
+  types.ts           LayerEngine, View, RenderContext, Style
+  meshEngine.ts      The mesh engine: source texture + UV warp
+  MeshRenderer.ts    WebGL2 textured mesh + wireframe + colour mapping
+  LineRenderer.ts    Flat-colour line overlay (graticule)
+  mesh.ts            Screen-aligned grid generation
+  uv.ts              Inverse-projection UVs, validity mask, seam handling
+
+src/core/            What a layer is, independent of drawing
+  source.ts          RasterSource, fetch planning, URL fragments
+  cogSource.ts       COG backend (overviews, windowed tile reads)
+  xyzSource.ts       Tile pyramid backend (matrix sets, presets, stitching)
+  wmts.ts            WMTS GetCapabilities parsing
+  bounds.ts          Extents and transforms between CRSs
+  crs.ts             proj4 definitions, zone synthesis, runtime lookup
+  centred.ts         Centred-projection templates and pan-as-recentre
+  colormap.ts        Colour ramps, including value-anchored palettes
+  graticule.ts       Lon/lat lines projected into the display CRS
+
+tools/check-crs.py   Checks crs.ts against PROJ's EPSG database
 ```
+
+### The engine seam
+
+A `LayerEngine` owns one layer's pixels: it reads from a `RasterSource` and
+puts something on screen for the current `View`. Three verbs, separated by
+what they cost:
+
+| | when | mesh engine does |
+|---|---|---|
+| `layout(ctx)` | every view change | recompute UVs for the screen grid |
+| `refresh(ctx)` | debounced | fetch the source window it needs |
+| `draw(ctx)` | every frame | one draw call |
+
+Everything above that interface - palettes, rescaling, hillshade, nodata,
+alpha, the layer list, the URL state - is engine-agnostic, because styling
+is a `Style` of plain numbers that the engine turns into uniforms.
+
+The mesh engine is the only implementation today. The interface exists
+because a second one is intended: a warp engine backed by
+[rwarp](https://github.com/hypertidy/rwarp), which resamples the source
+into a raster on the display grid (a real GDAL warp pipeline in wasm)
+instead of approximating the warp with interpolated UVs. Exact and
+resampled where the mesh is fast and free; the natural arrangement is mesh
+while the view is moving and warp once it settles.
 
 ## Test COGs
 
@@ -154,13 +350,12 @@ crs.ts            - proj4 definitions
 
 ## Next Steps
 
-- Photometric interpretation (grayscale min/max scaling, nodata, colour tables)
-- Per-tile loading rather than whole overviews, so full-resolution levels work
-- Register more CRS definitions on the fly (UTM zones are synthesised; other EPSG codes still need a def in crs.ts)
+- Colour tables and categorical palettes; per-band rescale for composites
+- Value readout under the cursor for numeric layers
+- Smarter regions for views that straddle the antimeridian (currently the full width is fetched)
+- Time slider (the time field refetches, but a scrubber over the dimension range would be nicer)
 - Close the pole hole, probably by doing the inverse projection per fragment in the shader for those triangles
-- Tile server sources (WMTS/XYZ)
-- Graticule overlay, which would make the centred projections much easier to read
-
+- Graticule labels
 
 ## Related
 
@@ -169,4 +364,3 @@ crs.ts            - proj4 definitions
 - [earlier R impl. anglr](https://github.com/hypertidy/anglr)
 - [textures in rgl discussed in a mesh-spatial talk](https://youtu.be/EnwkVXLRUYI?si=8TvruDeg1F1FnCa8&t=957)
 - [Jason Davies, naturally](https://www.jasondavies.com/)
-
