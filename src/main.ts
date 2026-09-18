@@ -29,7 +29,7 @@ import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapab
 import { LineRenderer } from './engine/LineRenderer';
 import { buildGraticule } from './core/graticule';
 import { ViewController, ViewState } from './ViewController';
-import { CENTRED_PRESETS, centredCRS, hasPlaceholders, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './core/centred';
+import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, resolveTemplate, normaliseLonLat } from './core/centred';
 import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
 import { MeshEngine } from './engine/meshEngine';
 import proj4 from 'proj4';
@@ -75,6 +75,11 @@ let meshCssH = 0;
 // view centre for a static CRS used in centred mode.
 let centredOriginX = 0;
 let centredOriginY = 0;
+// A shift-drag moves the view over the projection without re-centring it:
+// this is that displacement, in display metres, from the projected centre.
+// The next ordinary drag folds it back into the centre and clears it.
+let lookOffsetX = 0;
+let lookOffsetY = 0;
 let meshOriginX = NaN;
 let meshOriginY = NaN;
 
@@ -143,27 +148,30 @@ function currentDisplayCRS(): string {
 }
 
 /**
- * Where the centred-mode mesh is anchored in display space.
+ * Where the centred-mode mesh is anchored in display space: at the projected
+ * view centre, plus any shift-drag look-around offset.
  *
- * A re-centring template keeps the projection's own origin under the screen
- * centre, so the mesh sits around (0, 0). A static CRS (a template with no
- * placeholders, e.g. a plain EPSG code) does not move, so the mesh has to
- * follow the view centre instead: anchor it at the projected centre.
+ * For a template with both placeholders the projected centre is (0, 0) by
+ * construction. For one with only {lon_0} (the world projections) it is
+ * (0, y(lat)), which is what lets a north-south drag move the view while the
+ * central meridian keeps tracking. For a static CRS (no placeholders) it is
+ * simply where the centre falls in that CRS.
  */
 function updateCentredOrigin(): void {
-  if (mode !== 'centred' || hasPlaceholders(resolveTemplate(centredProj))) {
+  if (mode !== 'centred') {
     centredOriginX = 0;
     centredOriginY = 0;
     return;
   }
+  let x = 0, y = 0;
   try {
-    const [x, y] = proj4('EPSG:4326', currentDisplayCRS()).forward([centreLon, centreLat]);
-    centredOriginX = isFinite(x) ? x : 0;
-    centredOriginY = isFinite(y) ? y : 0;
+    [x, y] = proj4('EPSG:4326', currentDisplayCRS()).forward([centreLon, centreLat]);
+    if (!isFinite(x) || !isFinite(y)) { x = 0; y = 0; }
   } catch {
-    centredOriginX = 0;
-    centredOriginY = 0;
+    x = 0; y = 0;
   }
+  centredOriginX = x + lookOffsetX;
+  centredOriginY = y + lookOffsetY;
 }
 
 /**
@@ -301,10 +309,18 @@ function handleViewChange(state: ViewState): void {
     // Consume any pan offset: the display point now at the screen centre
     // becomes the new projection centre, and the camera snaps back to origin.
     if (state.centerX !== 0 || state.centerY !== 0) {
-      const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat,
-        centredOriginX + state.centerX, centredOriginY + state.centerY);
-      if (next) {
-        [centreLon, centreLat] = next;
+      if (state.shift) {
+        // Look around: move over the projection as it stands, no re-centring.
+        lookOffsetX += state.centerX;
+        lookOffsetY += state.centerY;
+      } else {
+        const next = panCentre(resolveTemplate(centredProj), centreLon, centreLat,
+          centredOriginX + state.centerX, centredOriginY + state.centerY);
+        if (next) {
+          [centreLon, centreLat] = next;
+        }
+        lookOffsetX = 0;
+        lookOffsetY = 0;
       }
       viewController.setState({ centerX: 0, centerY: 0 });
       state = viewController.getState();
@@ -680,6 +696,9 @@ function updateInfo(state: ViewState): void {
   ];
   if (mode === 'centred') {
     lines.push(`Centre: ${centreLon.toFixed(4)}, ${centreLat.toFixed(4)}`);
+    if (lookOffsetX !== 0 || lookOffsetY !== 0) {
+      lines.push(`Looking ${formatUnits(Math.hypot(lookOffsetX, lookOffsetY), 'm')} off centre (shift-drag; a plain drag re-centres)`);
+    }
   } else {
     lines.push(`Centre: ${state.centerX.toFixed(1)}, ${state.centerY.toFixed(1)}`);
   }

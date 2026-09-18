@@ -8,6 +8,8 @@ export interface ViewState {
   centerX: number;
   centerY: number;
   zoom: number;  // log2 scale: 0 = 1:1, -1 = half size, 1 = double size
+  /** The pan in centerX/centerY came from a shift-drag (mouse only). */
+  shift?: boolean;
 }
 
 export type ViewChangeCallback = (state: ViewState) => void;
@@ -60,6 +62,7 @@ export class ViewController {
     this.isDragging = true;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
+    this.state.shift = e.shiftKey;
     this.canvas.style.cursor = 'grabbing';
   };
 
@@ -76,11 +79,13 @@ export class ViewController {
 
   private onMouseUp = (): void => {
     this.isDragging = false;
+    this.state.shift = false;
     this.canvas.style.cursor = 'grab';
   };
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
+    this.state.shift = false;
     
     // Zoom centered on mouse position
     const rect = this.canvas.getBoundingClientRect();
@@ -101,6 +106,7 @@ export class ViewController {
   private onTouchStart = (e: TouchEvent): void => {
     e.preventDefault();
     
+    this.state.shift = false;
     if (e.touches.length === 1) {
       this.isDragging = true;
       this.lastX = e.touches[0].clientX;

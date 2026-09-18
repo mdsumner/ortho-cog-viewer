@@ -76,6 +76,14 @@ Presets are in `centred.ts`. A custom template can be given with `{lon_0}` and
 `{lat_0}` placeholders; anything with a centre parameter works, for example
 the `omerc` preset puts `{lon_0}` into `lonc`.
 
+A template with only `{lon_0}` (all the world projections) re-centres the
+meridian and lets the view move north-south over it: the mesh is anchored at
+the projected view centre, `(0, y(lat))`, rather than at the projection's own
+origin. **Shift-drag** looks around without re-centring at all - the
+projection stays exactly as it is and the view slides over it, which is how
+to inspect a limb, a lobe edge or a pole without the map re-shaping under
+you. The next plain drag folds the offset back into the centre.
+
 A template with **no** placeholders is an ordinary fixed CRS - `EPSG:28355`,
 say - used in centred mode: the projection stays put and only the mesh
 follows the view, anchored at the projected view centre. That gives the
