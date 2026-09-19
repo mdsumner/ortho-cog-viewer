@@ -34,6 +34,8 @@ import { ViewController, ViewState } from './ViewController';
 import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, panCentreAsync, resolveTemplate, normaliseLonLat } from './core/centred';
 import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
 import { MeshEngine } from './engine/meshEngine';
+import { WarpEngine, WarpOptions } from './engine/warpEngine';
+import { ResampleAlg } from './core/warp';
 import proj4 from 'proj4';
 
 registerProjections();
@@ -54,6 +56,13 @@ let mode: Mode = 'centred';
 let gridSize = 64;
 let showWireframe = false;
 let wrapWorld = false;         // repeat the world sideways where the projection allows
+// Which engine draws a layer: the mesh (GPU interpolation, free while
+// panning) or a real warp (rwarp in a worker, exact and resampled).
+type EngineKind = 'mesh' | 'warp';
+let engineKind: EngineKind = 'mesh';
+let warpAlg: ResampleAlg = 'bilinear';
+let warpScale = 1;
+let warpMaxError = 0.125;      // rwarp's approximate transformer; 0 is exact
 // When a drag moves the projection centre: every frame, or once on release.
 // auto: live under proj4js (free), on release under PROJ (a round trip, and
 // for an unfolded net a re-cut of the whole map).
@@ -146,6 +155,9 @@ let gridSizeInput: HTMLInputElement;
 let wireframeInput: HTMLInputElement;
 let graticuleInput: HTMLInputElement;
 let wrapInput: HTMLInputElement;
+let engineSelect: HTMLSelectElement;
+let warpAlgSelect: HTMLSelectElement;
+let warpScaleInput: HTMLInputElement;
 let recentreSelect: HTMLSelectElement;
 let gratMinor: LineRenderer;
 let gratMajor: LineRenderer;
@@ -263,6 +275,35 @@ function copyRange(w: WrapSpec, state: ViewState): [number, number] {
     if (k > kMax) kMax = k;
   }
   return [kMin - 1, kMax + 1];
+}
+
+function warpOptions(): WarpOptions {
+  return { alg: warpAlg, scale: warpScale, prefer: 'rwarp', maxError: warpMaxError };
+}
+
+/** An engine of the current kind for a layer. */
+function makeEngine(layer: Layer): LayerEngine {
+  const change = () => onEngineChange(layer);
+  return engineKind === 'warp'
+    ? new WarpEngine(gl, layer.source, styleOf(layer), change, warpOptions())
+    : new MeshEngine(gl, layer.source, styleOf(layer), change);
+}
+
+/** Swap every layer to the current engine kind (or push new warp options). */
+function rebuildEngines(): void {
+  const ctx = contextFor(viewController.getState());
+  for (const layer of layers) {
+    if (layer.engine.kind === engineKind) {
+      if (layer.engine instanceof WarpEngine) layer.engine.setOptions(warpOptions());
+    } else {
+      layer.engine.dispose();
+      layer.engine = makeEngine(layer);
+    }
+    layer.engine.layout(ctx);
+  }
+  render(viewController.getState());
+  scheduleRefresh(viewController.getState());
+  updateUI();
 }
 
 /** The Style a layer's engine should use, from the shell's own state. */
@@ -722,7 +763,7 @@ async function addLayer(url: string): Promise<Layer | null> {
       scale,
       opacity
     } as Layer;
-    layer.engine = new MeshEngine(gl, source, styleOf(layer), () => onEngineChange(layer));
+    layer.engine = makeEngine(layer);
 
     const ctx = contextFor(viewController.getState());
     layer.engine.layout(ctx);
@@ -896,6 +937,7 @@ function updateInfo(state: ViewState): void {
   const lines = [
     `Mode: ${mode}`,
     `Display: <span class="crs-string" title="${crs}">${crs}</span>`,
+    `Engine: ${engineKind === 'warp' ? `warp (${warpAlg}, ${warpScale}x)` : 'mesh'}`,
     `Executor: ${executorFor(crs) === 'proj' ? 'PROJ (wasm), a frame behind' : 'proj4js'}`,
     `Zoom: ${state.zoom.toFixed(2)} (${formatRes(metresPerPx)}/px)`,
   ];
@@ -1006,7 +1048,7 @@ function updateUI(): void {
         <button data-fit="${layer.id}" title="Centre the view on this layer">fit</button>
         <span title="${layer.url}">${src.label}</span>
         <span>(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)</span>
-      </div>
+      </div>${layer.engine instanceof WarpEngine ? `<div class="alpha-row">${layer.engine.describe()}</div>` : ''}
       <div class="alpha-row">
         alpha <input type="range" min="0" max="1" step="0.02" value="${layer.opacity}" data-alpha="${layer.id}" />
         <span data-alpha-val="${layer.id}">${Math.round(layer.opacity * 100)}%</span>
@@ -1255,6 +1297,9 @@ function syncUI(): void {
   gridSizeInput.value = String(gridSize);
   wireframeInput.checked = showWireframe;
   wrapInput.checked = wrapWorld;
+  engineSelect.value = engineKind;
+  warpAlgSelect.value = warpAlg;
+  warpScaleInput.value = String(warpScale);
   recentreSelect.value = recentreMode;
   graticuleInput.checked = showGraticule;
   displayCrsInput.value = displayCRS;
@@ -1290,6 +1335,15 @@ function applyUrlParams(params: URLSearchParams): void {
 
   const wr = params.get('wrap');
   if (wr !== null) wrapWorld = wr === '1' || wr === 'true';
+
+  const en = params.get('engine');
+  if (en === 'mesh' || en === 'warp') engineKind = en;
+  const al = params.get('alg');
+  if (al === 'nearest' || al === 'bilinear' || al === 'cubic' || al === 'lanczos') warpAlg = al;
+  const ws = parseFloat(params.get('warpscale') || '');
+  if (isFinite(ws) && ws > 0) warpScale = ws;
+  const me = parseFloat(params.get('maxerr') || '');
+  if (isFinite(me) && me >= 0) warpMaxError = me;
 
   const rc = params.get('recentre');
   if (rc === 'live' || rc === 'release' || rc === 'auto') recentreMode = rc;
@@ -1355,6 +1409,10 @@ function viewUrl(withLayers: boolean): string {
   if (!showGraticule) p.set('grat', '0');
   if (wrapWorld) p.set('wrap', '1');
   if (recentreMode !== 'auto') p.set('recentre', recentreMode);
+  if (engineKind !== 'mesh') p.set('engine', engineKind);
+  if (warpAlg !== 'bilinear') p.set('alg', warpAlg);
+  if (warpScale !== 1) p.set('warpscale', String(warpScale));
+  if (warpMaxError !== 0.125) p.set('maxerr', String(warpMaxError));
   if (withLayers) for (const l of layers) p.append('url', layerUrlWithState(l));
   return `${location.pathname}?${p.toString()}`;
 }
@@ -1402,6 +1460,9 @@ async function main() {
   wireframeInput = document.getElementById('wireframe') as HTMLInputElement;
   wrapInput = document.getElementById('wrap') as HTMLInputElement;
   recentreSelect = document.getElementById('recentre') as HTMLSelectElement;
+  engineSelect = document.getElementById('engine') as HTMLSelectElement;
+  warpAlgSelect = document.getElementById('warp-alg') as HTMLSelectElement;
+  warpScaleInput = document.getElementById('warp-scale') as HTMLInputElement;
   graticuleInput = document.getElementById('graticule') as HTMLInputElement;
   vertexCountEl = document.getElementById('vertex-count')!;
   infoEl = document.getElementById('info')!;
@@ -1532,6 +1593,20 @@ async function main() {
   });
   (document.getElementById('link-btn') as HTMLButtonElement).addEventListener('click', shareLink);
   (document.getElementById('reset-btn') as HTMLButtonElement).addEventListener('click', resetAll);
+  engineSelect.addEventListener('change', () => {
+    engineKind = engineSelect.value as EngineKind;
+    rebuildEngines();
+    scheduleUrlUpdate();
+  });
+  warpAlgSelect.addEventListener('change', () => {
+    warpAlg = warpAlgSelect.value as ResampleAlg;
+    rebuildEngines();
+    scheduleUrlUpdate();
+  });
+  warpScaleInput.addEventListener('change', () => {
+    const v = parseFloat(warpScaleInput.value);
+    if (isFinite(v) && v > 0) { warpScale = v; rebuildEngines(); scheduleUrlUpdate(); }
+  });
   recentreSelect.addEventListener('change', () => {
     recentreMode = recentreSelect.value as RecentreMode;
     scheduleUrlUpdate();

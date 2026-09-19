@@ -6,3 +6,4 @@ dist/
 *.Rproj
 public/proj-wasm/
 public/worker-smoke/
+public/rwarp/

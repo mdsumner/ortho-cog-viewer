@@ -275,6 +275,20 @@
           </div>
         </div>
         <div class="control-row">
+          <label for="engine">Engine:</label>
+          <select id="engine" title="mesh: GPU-interpolated texture, free while panning; warp: every screen pixel resampled by rwarp in a worker">
+            <option value="mesh">mesh (GPU interpolation)</option>
+            <option value="warp">warp (rwarp resampling)</option>
+          </select>
+          <select id="warp-alg" title="resampling kernel for the warp engine">
+            <option value="nearest">nearest</option>
+            <option value="bilinear" selected>bilinear</option>
+            <option value="cubic">cubic</option>
+            <option value="lanczos">lanczos</option>
+          </select>
+          <input type="number" id="warp-scale" class="small" value="1" min="0.1" max="2" step="0.1" title="warp pixels per screen pixel; 0.5 is four times faster" />
+        </div>
+        <div class="control-row">
           <label>Grid:</label>
           <input type="number" id="grid-size" class="small" value="64" min="4" max="256" />
           <span id="vertex-count">(4225 verts)</span>

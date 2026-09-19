@@ -46,6 +46,20 @@ function runProj4(t: { forward(p: number[]): number[] }, xy: Float64Array): Floa
 
 const cache = new Map<string, GeoTransform>();
 
+/**
+ * proj4js returns NaN from several projections (laea among them) when a
+ * +proj string has no +x_0 / +y_0, because it reads undefined false
+ * origins as numbers. PROJ treats them as zero. Give proj4js the zeros;
+ * crsDefinition() still hands out the string as given.
+ */
+function forProj4js(crs: string): string {
+  if (!crs.startsWith('+')) return crs;
+  let s = crs;
+  if (!/\+x_0=/.test(s)) s += ' +x_0=0';
+  if (!/\+y_0=/.test(s)) s += ' +y_0=0';
+  return s;
+}
+
 export function geoTransform(crs: string): GeoTransform {
   const key = crs.trim();
   const hit = cache.get(key);
@@ -60,8 +74,9 @@ export function geoTransform(crs: string): GeoTransform {
       fromGeo: (ll) => projTransformBatch(def, ll, 'fromGeo')
     };
   } else {
-    const inv = proj4(key, 'EPSG:4326');
-    const fwd = proj4('EPSG:4326', key);
+    const p4 = forProj4js(key);
+    const inv = proj4(p4, 'EPSG:4326');
+    const fwd = proj4('EPSG:4326', p4);
     const toGeoSync = (xy: Float64Array) => runProj4(inv, xy);
     const fromGeoSync = (ll: Float64Array) => runProj4(fwd, ll);
     g = {

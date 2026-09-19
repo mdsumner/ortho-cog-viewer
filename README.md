@@ -362,6 +362,51 @@ is another sinusoid), not a copy. The Mercator case is the only one where
 the two agree. Also worth knowing: proj4js's `cea` returns NaN without
 `+lat_ts`, so a bare `+proj=cea` reports no repeat for that reason alone.
 
+### The warp engine
+
+The mesh engine never resamples: it places triangle corners exactly and lets
+the GPU interpolate the texture between them, which is why it is free while
+panning. The **warp engine** does what gdalwarp does: for every screen pixel
+it finds the source pixel and resamples (nearest, bilinear, cubic, lanczos).
+Exact, and what it draws is a raster in the display CRS that could be
+written out; it costs a warp per view change, which runs in a Web Worker.
+While that is in flight the last warp is drawn where it belongs, so panning
+slides it and the new one lands a moment later.
+
+Select **Engine: warp** (`engine=warp`, with `alg=`, `warpscale=` for warp
+pixels per screen pixel, and `maxerr=` for the approximate transformer's
+threshold, 0 for exact). Both engines sit behind the same `LayerEngine`
+seam, read the same sources, and are styled by the same shader, so palettes,
+hillshade, nodata and alpha are identical; switching engines re-draws the
+same layers.
+
+The warp is done by [rwarp](https://github.com/hypertidy/rwarp), Michael
+Sumner's GDAL warp pipeline in Rust, built to wasm (`rwarp-wasm`,
+wasm-bindgen, `Warper.warp_rgba` / `warp_f32`). It is handed CRSs as the
+definition strings `crsDefinition()` gives out - the handoff the
+`check-crs.py` contract exists for - and geotransforms in GDAL order.
+rwarp's CRS backend is proj4rs, which parses a smaller set than proj4js or
+PROJ (laea, stere, aea, lcc, tmerc/utm, merc, eqc, moll, geos, somerc; not
+ortho, aeqd or the ports); when it declines, a **reference warp** in plain
+JavaScript takes over - every destination pixel inverse-projected through
+the viewer's own `GeoTransform`, nearest neighbour - so the warp engine
+works on every CRS the viewer can execute, PROJ-only ones included. The
+layer's caption says which backend ran and how long it took.
+
+The reference is also the oracle: `pnpm run check-warp` warps a synthetic
+Mercator source through both backends onto the same grid in several CRSs
+and compares pixel by pixel. Exact rwarp (`max_error` 0) agrees with the
+reference 100% with a worst channel difference of 0 on every CRS it accepts.
+The approximate transformer (0.125, the default, 3-5x faster) drops columns
+of pixels on Mercator-to-polar-stereographic that the exact one keeps -
+rwarp's subdivision to look at, reported by the check as `note` lines.
+
+`tools/bundle-rwarp.mjs` lays `rwarp_wasm.js` and `rwarp_wasm_bg.wasm` out
+flat in `public/rwarp/` before dev and build, from `node_modules/rwarp-wasm`
+if the package is installed, else `$RWARP_PKG` (a local wasm-pack build),
+else `vendor/rwarp-wasm/`, an interim copy committed here until the package
+is published.
+
 ### core/ is worker-safe
 
 Everything under `src/core/` runs without a DOM: no `document`, no `window`,
@@ -432,6 +477,7 @@ page with no parameters.
 | `wire`   | `1` to draw the mesh triangles over the imagery                    |
 | `grat`   | `0` to hide the 10-degree graticule (on by default)                |
 | `wrap`   | `1` to repeat the world sideways where the projection has a repeat |
+| `engine` | `mesh` (default) or `warp`; `alg`, `warpscale`, `maxerr` tune the warp |
 | `recentre` | centred mode: `auto` (default), `live` or `release`, see above |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
@@ -490,6 +536,8 @@ src/ViewController   Pan/zoom/touch input
 src/engine/          How a layer's pixels reach the screen
   types.ts           LayerEngine, View, RenderContext, Style
   meshEngine.ts      The mesh engine: source texture + UV warp
+  warpEngine.ts      The warp engine: the source resampled onto the screen, one quad
+  warpWorker.ts      The worker the warp runs in; warpClient.ts its handle
   MeshRenderer.ts    WebGL2 textured mesh + wireframe + colour mapping
   LineRenderer.ts    Flat-colour line overlay (graticule)
   mesh.ts            Screen-aligned grid generation
@@ -505,6 +553,7 @@ src/core/            What a layer is, independent of drawing
   projwasm.ts        PROJ in wasm as the resolver of last resort
   projections.ts     eck4, natearth, hammer, wintri, igh for proj4js
   transform.ts       GeoTransform: display <-> lon/lat by either executor
+  warp.ts            WarpBackend: the rwarp adapter and the reference warp
   centred.ts         Centred-projection templates and pan-as-recentre
   colormap.ts        Colour ramps, including value-anchored palettes
   graticule.ts       Lon/lat lines projected into the display CRS
@@ -515,6 +564,9 @@ tools/proj-wasm-engine.mjs   proj-wasm as an engine for check-crs.py
 tools/check-projections.py   Holds projections.ts to PROJ on a global grid
 tools/check-worker-core.mjs  Guards core/ against DOM use; bundles the worker smoke test
 tools/check-worker-core.py   Runs the worker smoke test in headless Chromium
+tools/check-warp.mjs         Holds rwarp to the reference warp on synthetic data
+tools/bundle-rwarp.mjs       Lays rwarp-wasm out in public/rwarp/
+vendor/rwarp-wasm/           Interim copy of the rwarp-wasm build
 tools/bundle-proj-wasm.mjs   Lays proj-wasm out in public/proj-wasm/
 ```
 

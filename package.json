@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "node tools/bundle-proj-wasm.mjs",
+    "predev": "node tools/bundle-proj-wasm.mjs && node tools/bundle-rwarp.mjs",
     "dev": "vite",
-    "prebuild": "node tools/bundle-proj-wasm.mjs",
+    "prebuild": "node tools/bundle-proj-wasm.mjs && node tools/bundle-rwarp.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "check-crs": "python3 tools/check-crs.py --engine 'node tools/proj-wasm-engine.mjs'",
-    "check-worker": "node tools/check-worker-core.mjs && python3 tools/check-worker-core.py"
+    "check-worker": "node tools/check-worker-core.mjs && python3 tools/check-worker-core.py",
+    "check-warp": "node tools/check-warp.mjs"
   },
   "dependencies": {
     "geotiff": "^2.1.4-beta.1",
