@@ -1,11 +1,11 @@
 /**
  * Main-thread handle on the warp worker: one worker, jobs by id.
  */
-import type { WarpJob } from '../core/warp';
+import type { WarpJob, WarpBackendName } from '../core/warp';
 import type { WarpMessage, WarpReply } from './warpWorker';
 
 export interface WarpOutcome {
-  backend: 'rwarp' | 'reference';
+  backend: WarpBackendName;
   note?: string;
   ms: number;
   rgba?: Uint8ClampedArray;

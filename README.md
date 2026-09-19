@@ -387,11 +387,19 @@ definition strings `crsDefinition()` gives out - the handoff the
 `check-crs.py` contract exists for - and geotransforms in GDAL order.
 rwarp's CRS backend is proj4rs, which parses a smaller set than proj4js or
 PROJ (laea, stere, aea, lcc, tmerc/utm, merc, eqc, moll, geos, somerc; not
-ortho, aeqd or the ports); when it declines, a **reference warp** in plain
-JavaScript takes over - every destination pixel inverse-projected through
-the viewer's own `GeoTransform`, nearest neighbour - so the warp engine
-works on every CRS the viewer can execute, PROJ-only ones included. The
-layer's caption says which backend ran and how long it took.
+ortho, aeqd or the ports). When it declines, two things can happen:
+
+- with rwarp-wasm 0.1.1 or later, **rwarp keeps warping and proj4js does the
+  projecting**: `Warper.withTransforms` takes the CRS transforms as
+  JavaScript functions called per point, so ortho, aeqd and the five ports
+  get rwarp's kernels at rwarp's speed (caption: `rwarp+proj4js`);
+- otherwise, and for PROJ-only CRSs (which answer asynchronously, and the
+  callback must not), a **reference warp** in plain JavaScript takes over -
+  every destination pixel inverse-projected through the viewer's own
+  `GeoTransform`, nearest neighbour - so the warp engine works on every CRS
+  the viewer can execute.
+
+The layer's caption says which backend ran and how long it took.
 
 The reference is also the oracle: `pnpm run check-warp` warps a synthetic
 Mercator source through both backends onto the same grid in several CRSs

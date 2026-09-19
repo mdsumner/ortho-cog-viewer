@@ -7,7 +7,7 @@
  * the same code the page runs, with PROJ available through its own nested
  * worker for the CRSs proj4js cannot execute.
  */
-import { WarpBackend, WarpJob, loadRwarp, referenceBackend } from '../core/warp';
+import { WarpBackend, WarpBackendName, WarpJob, loadRwarp, referenceBackend } from '../core/warp';
 import { registerProjections, resolveCRS, setDefinitionProvider } from '../core/crs';
 import { projWasmProvider, setProjWasmBase } from '../core/projwasm';
 
@@ -18,7 +18,7 @@ export interface WarpReply {
   type: 'result';
   id: number;
   ok: boolean;
-  backend?: 'rwarp' | 'reference';
+  backend?: WarpBackendName;
   /** why rwarp was not used, when it was asked for */
   note?: string;
   ms?: number;

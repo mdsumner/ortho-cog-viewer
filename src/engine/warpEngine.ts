@@ -262,7 +262,7 @@ export class WarpEngine implements LayerEngine {
     if (this.lastError) return `warp: ${this.lastError}`;
     const o = this.lastOutcome;
     if (!o) return this.loading ? 'warp: working...' : 'warp: not yet';
-    const via = o.backend === 'rwarp' ? 'rwarp' : `reference${o.note ? ' (' + o.note + ')' : ''}`;
+    const via = o.backend === 'reference' ? `reference${o.note ? ' (' + o.note + ')' : ''}` : o.backend;
     return `warp: ${via}, ${this.opts.alg}, ${this.texSize} in ${Math.round(o.ms)} ms`;
   }
 

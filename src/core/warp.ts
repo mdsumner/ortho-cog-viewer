@@ -24,10 +24,14 @@
  * never codes. Geotransforms are GDAL order [x0, dx, rx, y0, ry, dy].
  */
 import proj4 from 'proj4';
-import { geoTransform } from './transform';
+import { geoTransform, forProj4js } from './transform';
 
 export type ResampleAlg = 'nearest' | 'bilinear' | 'cubic' | 'lanczos';
-export type WarpBackendName = 'rwarp' | 'reference';
+/**
+ * rwarp+proj4js is rwarp's kernels with the page's proj4js doing the
+ * projecting (Warper.withTransforms), for CRSs proj4rs does not parse.
+ */
+export type WarpBackendName = 'rwarp' | 'rwarp+proj4js' | 'reference';
 
 export interface WarpJob {
   srcCrs: string;
@@ -67,14 +71,49 @@ export interface WarpBackend {
 // ---------------------------------------------------------------------------
 // rwarp
 
+interface RwarpWarper {
+  warp_rgba(src: Uint8Array, w: number, h: number, xoff: number, yoff: number, dstW: number, dstH: number, alg: string): Uint8Array;
+  warp_f32(src: Float32Array, w: number, h: number, xoff: number, yoff: number, dstW: number, dstH: number, nodata: number, alg: string): Float32Array;
+  free(): void;
+}
+type PointFn = (x: number, y: number, out: Float64Array) => boolean;
 interface RwarpModule {
   default(input?: unknown): Promise<unknown>;
-  Warper: new (srcCrs: string, srcGt: Float64Array, dstCrs: string, dstGt: Float64Array, maxError: number) => {
-    warp_rgba(src: Uint8Array, w: number, h: number, xoff: number, yoff: number, dstW: number, dstH: number, alg: string): Uint8Array;
-    warp_f32(src: Float32Array, w: number, h: number, xoff: number, yoff: number, dstW: number, dstH: number, nodata: number, alg: string): Float32Array;
-    free(): void;
+  Warper: (new (srcCrs: string, srcGt: Float64Array, dstCrs: string, dstGt: Float64Array, maxError: number) => RwarpWarper) & {
+    /** Present from rwarp-wasm 0.1.1: CRS transforms as JavaScript functions. */
+    withTransforms?(srcGt: Float64Array, dstGt: Float64Array, dstToSrc: PointFn, srcToDst: PointFn, maxError: number): RwarpWarper;
   };
 }
+
+/**
+ * proj4js as a pair of point functions for Warper.withTransforms, or null
+ * if proj4js cannot execute either CRS. Synchronous by necessity: the
+ * callback happens inside rwarp's transform loop. That is why PROJ-only
+ * CRSs cannot take this route yet - PROJ in wasm answers asynchronously.
+ */
+function proj4jsPointFns(srcCrs: string, dstCrs: string): [PointFn, PointFn] | null {
+  let d2s: { forward(p: number[]): number[] }, s2d: { forward(p: number[]): number[] };
+  try {
+    const s = forProj4js(srcCrs), d = forProj4js(dstCrs);
+    d2s = proj4(d, s);
+    s2d = proj4(s, d);
+  } catch {
+    return null;
+  }
+  const call = (t: { forward(p: number[]): number[] }): PointFn => (x, y, out) => {
+    try {
+      const r = t.forward([x, y]);
+      out[0] = r[0];
+      out[1] = r[1];
+      return isFinite(r[0]) && isFinite(r[1]);
+    } catch {
+      return false;
+    }
+  };
+  return [call(d2s), call(s2d)];
+}
+
+
 
 /**
  * Load rwarp from a folder served flat (rwarp_wasm.js beside its wasm),
@@ -89,30 +128,54 @@ export async function loadRwarp(folderURL: string): Promise<WarpBackend> {
 
 export function rwarpBackend(mod: RwarpModule): WarpBackend {
   const unit = new Float64Array([0, 1, 0, 0, 0, -1]);
+  // Which route a CRS pair takes, remembered per pair.
+  const routes = new Map<string, 'proj4rs' | 'proj4js' | string>();
+  const route = (srcCrs: string, dstCrs: string): 'proj4rs' | 'proj4js' | string => {
+    const key = srcCrs + '\u0000' + dstCrs;
+    const hit = routes.get(key);
+    if (hit) return hit;
+    let r: string;
+    try {
+      new mod.Warper(srcCrs, unit, dstCrs, unit, 0.125).free();
+      r = 'proj4rs';
+    } catch (err) {
+      const m = String((err as Error).message ?? err);
+      const why = m.length > 160 ? m.slice(0, 157) + '...' : m;
+      // proj4rs declined: can proj4js do the projecting for rwarp?
+      r = mod.Warper.withTransforms && proj4jsPointFns(srcCrs, dstCrs) ? 'proj4js' : why;
+    }
+    routes.set(key, r);
+    return r;
+  };
+  const build = (job: WarpJob): { w: RwarpWarper; name: WarpBackendName } => {
+    const r = route(job.srcCrs, job.dstCrs);
+    if (r === 'proj4rs') {
+      return { w: new mod.Warper(job.srcCrs, job.srcGt, job.dstCrs, job.dstGt, job.maxError ?? 0.125), name: 'rwarp' };
+    }
+    if (r === 'proj4js') {
+      const [d2s, s2d] = proj4jsPointFns(job.srcCrs, job.dstCrs)!;
+      return { w: mod.Warper.withTransforms!(job.srcGt, job.dstGt, d2s, s2d, job.maxError ?? 0.125), name: 'rwarp+proj4js' };
+    }
+    throw new Error(r);
+  };
   return {
     name: 'rwarp',
     async accepts(srcCrs, dstCrs) {
-      try {
-        const w = new mod.Warper(srcCrs, unit, dstCrs, unit, 0.125);
-        w.free();
-        return null;
-      } catch (err) {
-        const m = String((err as Error).message ?? err);
-        return m.length > 160 ? m.slice(0, 157) + '...' : m;
-      }
+      const r = route(srcCrs, dstCrs);
+      return r === 'proj4rs' || r === 'proj4js' ? null : r;
     },
     async warp(job) {
       const t0 = performance.now();
-      const w = new mod.Warper(job.srcCrs, job.srcGt, job.dstCrs, job.dstGt, job.maxError ?? 0.125);
+      const { w, name } = build(job);
       try {
         if (job.float) {
           const out = w.warp_f32(job.float, job.srcW, job.srcH, 0, 0, job.dstW, job.dstH,
             job.nodata === null ? NaN : job.nodata, job.alg);
-          return { backend: 'rwarp', ms: performance.now() - t0, float: out };
+          return { backend: name, ms: performance.now() - t0, float: out };
         }
         const src = job.rgba instanceof Uint8Array ? job.rgba : new Uint8Array(job.rgba!.buffer, job.rgba!.byteOffset, job.rgba!.byteLength);
         const out = w.warp_rgba(src, job.srcW, job.srcH, 0, 0, job.dstW, job.dstH, job.alg);
-        return { backend: 'rwarp', ms: performance.now() - t0, rgba: new Uint8ClampedArray(out.buffer, out.byteOffset, out.byteLength) };
+        return { backend: name, ms: performance.now() - t0, rgba: new Uint8ClampedArray(out.buffer, out.byteOffset, out.byteLength) };
       } finally {
         w.free();
       }

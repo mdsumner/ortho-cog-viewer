@@ -52,7 +52,7 @@ const cache = new Map<string, GeoTransform>();
  * origins as numbers. PROJ treats them as zero. Give proj4js the zeros;
  * crsDefinition() still hands out the string as given.
  */
-function forProj4js(crs: string): string {
+export function forProj4js(crs: string): string {
   if (!crs.startsWith('+')) return crs;
   let s = crs;
   if (!/\+x_0=/.test(s)) s += ' +x_0=0';

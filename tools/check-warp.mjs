@@ -52,7 +52,13 @@ const targets = {
   'utm 55S': [core.crsDefinition('EPSG:32755'), 800000],
   'merc': [core.crsDefinition('EPSG:3857'), 10000000],
   'moll lon_0=147': ['+proj=moll +lon_0=147 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs', 30000000],
-  'lcc Australia (EPSG:3112)': [core.crsDefinition('EPSG:3112'), 5000000]
+  'lcc Australia (EPSG:3112)': [core.crsDefinition('EPSG:3112'), 5000000],
+  // proj4rs has none of these; with rwarp-wasm >= 0.1.1 they run through
+  // Warper.withTransforms with proj4js projecting for rwarp, and are held to
+  // the reference like the rest. With an older build they are skipped.
+  'ortho Tasmania (via proj4js)': ['+proj=ortho +lat_0=-42 +lon_0=147 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs', 4000000],
+  'eck4 (via proj4js)': ['+proj=eck4 +lon_0=147 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs', 30000000],
+  'igh (via proj4js)': ['+proj=igh +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs', 30000000]
 };
 
 let failed = false;
@@ -85,7 +91,7 @@ for (const [name, [dstCrs, extent]] of Object.entries(targets)) {
     const exact = maxError === 0;
     if (exact) failed ||= !ok;
     const tag = exact ? (ok ? 'ok  ' : 'FAIL') : (ok ? 'ok  ' : 'note');
-    console.log(`${tag} ${name.padEnd(26)} ${exact ? 'exact ' : 'approx'}  both ${both.toString().padStart(6)}  agree ${(100 * agree).toFixed(2)}%  worst ${String(worst).padStart(3)}  ` +
+    console.log(`${tag} ${name.padEnd(30)} ${exact ? 'exact ' : 'approx'}  both ${both.toString().padStart(6)}  agree ${(100 * agree).toFixed(2)}%  worst ${String(worst).padStart(3)}  ` +
                 `only-rwarp ${String(onlyA).padStart(5)}  only-ref ${String(onlyB).padStart(5)}  (${Math.round(a.ms)} ms vs ref ${Math.round(ref.ms)} ms)`);
   }
 }
