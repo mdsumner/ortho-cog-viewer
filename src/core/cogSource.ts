@@ -211,7 +211,7 @@ export class COGSource implements RasterSource {
     fmt: number,
     nodata: number | null,
     band: number,
-    forceRgb: boolean,
+    forceRgb: boolean | 'palette',
     fileScale = 1,
     fileOffset = 0
   ) {
@@ -231,6 +231,7 @@ export class COGSource implements RasterSource {
     this.band = band;
     // Pictures are 8-bit with 3+ bands; everything else is data.
     this.numeric = !forceRgb && (spp < 3 || bits > 8 || fmt === 3);
+    if (forceRgb === 'palette') this.numeric = false;
     const geographic = /^EPSG:4326$|^EPSG:4269$|\+proj=longlat/.test(crs);
     this.wrapU = geographic && (bounds.maxX - bounds.minX) >= 359.9;
   }
@@ -284,7 +285,12 @@ export class COGSource implements RasterSource {
         if (isFinite(of)) fOffset = of;
       }
     } catch { /* no metadata */ }
-    const src = new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, !!opts.rgb, fScale, fOffset);
+    // A paletted TIFF is a picture whose colours live in its ColorMap;
+    // readRGB expands it, so it goes down the picture path whatever its
+    // band count says.
+    const fd = image.fileDirectory as { PhotometricInterpretation?: number; ColorMap?: ArrayLike<number> };
+    const palette = fd.PhotometricInterpretation === 3 || (!!fd.ColorMap && fd.ColorMap.length > 0 && spp === 1);
+    const src = new COGSource(url, crs, bounds, levels, spp, bits, fmt, nodata, band, palette ? 'palette' : !!opts.rgb, fScale, fOffset);
     if (opts.scale !== undefined) src.scale = opts.scale;
     if (opts.offset !== undefined) src.offset = opts.offset;
     if (opts.bands && spp >= 3) {
@@ -360,9 +366,30 @@ export class COGSource implements RasterSource {
     }
 
     console.log(`COG fetch level ${level} window [${x0},${y0},${x1},${y1}] -> ${outW}x${outH}`);
-    const rasters = await image.readRasters(opts as any);
+    // A picture is read through readRGB, which applies the photometric
+    // interpretation: YCbCr (what GDAL writes for JPEG compression), a
+    // palette, CMYK, CIELab all come out as RGB. readRasters hands back the
+    // stored samples as they are, which for a YCbCr JPEG is a purple map.
+    // An alpha band, when there is one, is kept.
+    const spp = image.getSamplesPerPixel();
+    const fd = image.fileDirectory as { PhotometricInterpretation?: number; ColorMap?: ArrayLike<number> };
+    if (spp === 1 && fd.ColorMap && fd.ColorMap.length > 0 && fd.PhotometricInterpretation !== 3) {
+      // A ColorMap without PhotometricInterpretation = palette (some writers
+      // do this): readRGB would treat it as greyscale, so expand it here.
+      // Entries are 16-bit, all reds then all greens then all blues.
+      const idx = (await image.readRasters({ ...opts, samples: [0] } as any)) as unknown as ArrayLike<number>;
+      const cm = fd.ColorMap, n = cm.length / 3;
+      const rgba = new Uint8ClampedArray(outW * outH * 4);
+      for (let i = 0; i < outW * outH; i++) {
+        const k = Math.min(n - 1, idx[i]);
+        rgba[i * 4] = cm[k] >> 8; rgba[i * 4 + 1] = cm[n + k] >> 8; rgba[i * 4 + 2] = cm[2 * n + k] >> 8; rgba[i * 4 + 3] = 255;
+      }
+      return { rgba: { data: rgba, width: outW, height: outH }, bounds };
+    }
+    const hasAlpha = spp === 4 || spp === 2;
+    const rasters = await image.readRGB({ ...opts, enableAlpha: hasAlpha } as any);
     const data = rasters as unknown as ArrayLike<number>;
-    const rgba = toRGBA(data, outW, outH, image.getSamplesPerPixel());
+    const rgba = toRGBA(data, outW, outH, hasAlpha ? 4 : 3);
     return { rgba, bounds };
   }
 }

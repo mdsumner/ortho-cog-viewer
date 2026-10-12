@@ -1563,8 +1563,10 @@ async function main() {
   // so "#band=2&cmap=turbo" styles a file the same way it styles a URL.
   const fileInput = document.getElementById('cog-file') as HTMLInputElement;
   const addFiles = async (files: FileList | File[], replace: boolean) => {
-    const list = Array.from(files).filter(f => /\.(tiff?|cog)$/i.test(f.name) || f.type === 'image/tiff');
-    if (list.length === 0) { alert('Drop or choose GeoTIFF files (.tif, .tiff)'); return; }
+    // Not filtered by name or type: a phone's Files picker may hand over a
+    // TIFF with no type at all. Opening is the test; a failure is reported.
+    const list = Array.from(files);
+    if (list.length === 0) return;
     const typed = urlInput.value.trim();
     const frag = typed.includes('#') ? typed.slice(typed.indexOf('#')) : '';
     if (replace) clearLayers();

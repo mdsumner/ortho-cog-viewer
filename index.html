@@ -322,7 +322,10 @@
         <button id="load-btn">Load</button>
         <button id="add-btn">Add</button>
         <label for="cog-file" class="file-btn" title="Open GeoTIFFs from this computer (or drop them on the map). Read in place, nothing is uploaded.">file...</label>
-        <input type="file" id="cog-file" accept=".tif,.tiff,image/tiff" multiple hidden />
+        <!-- No accept: on phones an image MIME type turns the picker into the Photos
+             picker, which cannot see a TIFF in Files, and extension filters are not
+             honoured. Anything can be chosen; the viewer tries to open it and says if it cannot. -->
+        <input type="file" id="cog-file" multiple hidden />
         <div class="control-row">
           <label>Preset:</label>
           <select id="tile-preset"><option value="">presets...</option></select>

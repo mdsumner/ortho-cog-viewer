@@ -181,6 +181,15 @@ Per-layer state rides on the URL fragment:
 `cog.tif#bands=4,3,2&min=0&max=3000` for a composite (`rgb=1` forces the
 8-bit picture path).
 
+### Pictures: YCbCr JPEG and palettes
+
+A picture (8-bit, three or more bands) is read through geotiff.js's
+`readRGB`, which applies the file's photometric interpretation. That
+matters for JPEG-compressed TIFFs, which GDAL writes as YCbCr by default:
+the stored samples are Y, Cb, Cr, and drawn as if they were R, G, B they
+make a purple-and-teal map. A paletted TIFF (a ColorMap, with or without
+`PhotometricInterpretation=3`) is a picture too, drawn in its own colours.
+
 ### Local files
 
 **file...** next to the URL box (or drop `.tif` files on the map) opens
