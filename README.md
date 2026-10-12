@@ -181,6 +181,17 @@ Per-layer state rides on the URL fragment:
 `cog.tif#bands=4,3,2&min=0&max=3000` for a composite (`rgb=1` forces the
 8-bit picture path).
 
+### Local files
+
+**file...** next to the URL box (or drop `.tif` files on the map) opens
+GeoTIFFs from your own disk. geotiff.js reads a `File` with the same range
+semantics it uses over HTTP, so a COG on disk is tiled and overview reads
+out of the file, never a whole-file load, and nothing is uploaded anywhere.
+A `#fragment` typed in the URL box is applied to the files you then open,
+so `#band=2&cmap=turbo` styles a file the way it styles a URL. Local layers
+are this page's only: they are left out of **link** and do not survive a
+refresh.
+
 ### COGs on GitHub
 
 A COG in a GitHub repo is only usable from a browser if it is fetched from

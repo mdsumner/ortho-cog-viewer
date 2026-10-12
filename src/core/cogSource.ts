@@ -4,7 +4,7 @@
  * geotiff.js only fetches the tiles that intersect the window.
  */
 
-import { fromUrl, GeoTIFF, GeoTIFFImage } from 'geotiff';
+import { fromUrl, fromBlob, GeoTIFF, GeoTIFFImage } from 'geotiff';
 import { RGBAImage, RasterSource, SourceLevel, TextureData, FloatStats, parseFragment } from './source';
 import { SourceBounds } from './bounds';
 import { resolveCRS, defineCRS, unknownCRSMessage, normaliseDefinition } from './crs';
@@ -12,12 +12,37 @@ import { resolveCRS, defineCRS, unknownCRSMessage, normaliseDefinition } from '.
 // One open handle per URL; the promise is cached so concurrent opens share it.
 const tiffCache = new Map<string, Promise<GeoTIFF>>();
 
+/**
+ * Files from the user's own disk, by the "local:<name>" URL the viewer
+ * gives them. geotiff.js reads a Blob with the same range semantics it uses
+ * over HTTP (File.slice), so a COG on disk is tiled and overview reads out
+ * of the file, never a whole-file load. Nothing about a local file can be
+ * put on a link, so these URLs are for this page only.
+ */
+const localFiles = new Map<string, Blob>();
+
+export function registerLocalFile(file: File): string {
+  const url = `local:${file.name}`;
+  localFiles.set(url, file);
+  tiffCache.delete(url);
+  return url;
+}
+
+export function isLocalUrl(url: string): boolean {
+  return url.startsWith('local:');
+}
+
 function getTiff(url: string): Promise<GeoTIFF> {
   let p = tiffCache.get(url);
   if (!p) {
-    p = fromUrl(url);
-    tiffCache.set(url, p);
-    p.catch(() => tiffCache.delete(url));
+    const blob = localFiles.get(url);
+    if (isLocalUrl(url) && !blob) {
+      return Promise.reject(new Error(`${url.slice(6)} is a file from a previous page; open it again`));
+    }
+    const opened: Promise<GeoTIFF> = blob ? fromBlob(blob) : fromUrl(url);
+    tiffCache.set(url, opened);
+    opened.catch(() => tiffCache.delete(url));
+    return opened;
   }
   return p;
 }
@@ -194,7 +219,7 @@ export class COGSource implements RasterSource {
     this.fileOffset = fileOffset;
     this.scale = fileScale;
     this.offset = fileOffset;
-    this.label = url.split('/').pop() || url;
+    this.label = (isLocalUrl(url) ? url.slice(6) + ' (local file)' : url.split('/').pop()) || url;
     this.crs = crs;
     this.bounds = bounds;
     this.levels = levels;

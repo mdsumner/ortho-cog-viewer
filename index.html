@@ -119,6 +119,17 @@
         display: flex;
         gap: 4px;
       }
+      .file-btn {
+        display: inline-block;
+        padding: 2px 6px;
+        border: 1px solid #666;
+        border-radius: 2px;
+        background: #333;
+        color: #ddd;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .file-btn:hover { background: #444; }
       .title-row .links button {
         font-size: 10px;
         padding: 1px 5px;
@@ -310,6 +321,8 @@
         <input type="text" id="cog-url" placeholder="COG URL, {z}/{x}/{y} template, or WMTS GetCapabilities URL" />
         <button id="load-btn">Load</button>
         <button id="add-btn">Add</button>
+        <label for="cog-file" class="file-btn" title="Open GeoTIFFs from this computer (or drop them on the map). Read in place, nothing is uploaded.">file...</label>
+        <input type="file" id="cog-file" accept=".tif,.tiff,image/tiff" multiple hidden />
         <div class="control-row">
           <label>Preset:</label>
           <select id="tile-preset"><option value="">presets...</option></select>

@@ -21,7 +21,7 @@ import { generateGridMesh, GridMesh } from './engine/mesh';
 import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider, executorFor } from './core/crs';
 import { projWasmProvider } from './core/projwasm';
 import { RasterSource, parseFragment, formatFragment } from './core/source';
-import { COGSource, splitCogUrl } from './core/cogSource';
+import { COGSource, splitCogUrl, registerLocalFile, isLocalUrl } from './core/cogSource';
 import { COLORMAPS, colormapCss, colormapRange, isColormapName } from './core/colormap';
 import { XYZSource, TILE_PRESETS, isTileTemplate } from './core/xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './core/wmts';
@@ -1413,7 +1413,7 @@ function viewUrl(withLayers: boolean): string {
   if (warpAlg !== 'bilinear') p.set('alg', warpAlg);
   if (warpScale !== 1) p.set('warpscale', String(warpScale));
   if (warpMaxError !== 0.125) p.set('maxerr', String(warpMaxError));
-  if (withLayers) for (const l of layers) p.append('url', layerUrlWithState(l));
+  if (withLayers) for (const l of layers) if (!isLocalUrl(l.url)) p.append('url', layerUrlWithState(l));
   return `${location.pathname}?${p.toString()}`;
 }
 
@@ -1557,6 +1557,28 @@ async function main() {
   }
   loadBtn.addEventListener('click', () => loadOrAdd(urlInput.value.trim(), true));
   addBtn.addEventListener('click', () => loadOrAdd(urlInput.value.trim(), false));
+
+  // Local files: the picker, and dropping files on the map. Each becomes a
+  // local:<name> layer; any #fragment typed in the URL box is carried over,
+  // so "#band=2&cmap=turbo" styles a file the same way it styles a URL.
+  const fileInput = document.getElementById('cog-file') as HTMLInputElement;
+  const addFiles = async (files: FileList | File[], replace: boolean) => {
+    const list = Array.from(files).filter(f => /\.(tiff?|cog)$/i.test(f.name) || f.type === 'image/tiff');
+    if (list.length === 0) { alert('Drop or choose GeoTIFF files (.tif, .tiff)'); return; }
+    const typed = urlInput.value.trim();
+    const frag = typed.includes('#') ? typed.slice(typed.indexOf('#')) : '';
+    if (replace) clearLayers();
+    for (const f of list) await addLayer(registerLocalFile(f) + frag);
+  };
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files.length) void addFiles(fileInput.files, false);
+    fileInput.value = '';
+  });
+  canvas.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
+  canvas.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.files.length) void addFiles(e.dataTransfer.files, false);
+  });
 
   // WMTS picker
   pickerEl = document.getElementById('wmts-picker')!;
