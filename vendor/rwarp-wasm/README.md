@@ -34,6 +34,30 @@ http, not file://) after building:
 Geotransforms are GDAL order `[x0, dx, rx, y0, ry, dy]`. CRS strings are
 proj strings (`+proj=laea +lat_0=-42 +lon_0=147 ...`) or `EPSG:NNNN`.
 
+### Bringing your own projections
+
+`proj4rs` parses a subset of what proj4js or PROJ do. When it declines a
+CRS, the page can lend rwarp its own projection library:
+
+    const w = Warper.withTransforms(srcGt, dstGt, dstToSrc, srcToDst, maxError);
+
+where `dstToSrc(x, y, out)` maps a destination geo coordinate to a source
+geo coordinate by writing `[x, y]` into `out` (a `Float64Array` of length 2)
+and returning `true`, or returns `false` for a point it cannot transform;
+`srcToDst` is the inverse. For example, with proj4js:
+
+    const d2s = proj4(dstCrs, srcCrs), s2d = proj4(srcCrs, dstCrs);
+    const call = (t) => (x, y, out) => {
+      try { const r = t.forward([x, y]); out[0] = r[0]; out[1] = r[1]; return isFinite(r[0]) && isFinite(r[1]); }
+      catch { return false; }
+    };
+    const w = Warper.withTransforms(srcGt, dstGt, call(d2s), call(s2d), 0.125);
+
+Everything downstream - the approximate transformer, the source window, the
+kernels - is unchanged; the callback is made once per point the approximate
+transformer actually evaluates, a few thousand per tile, so the cost is
+small. `warp_rgba` and `warp_f32` work as before.
+
 ## Sources
 
 `www/sources.js` resolves a source into one grid description (CRS, origin,
@@ -61,7 +85,7 @@ CORS headers, since tiles are decoded through a canvas.
 ## Projection support
 
 The `proj4rs` backend implements: latlong, laea, stere (and ups), sterea,
-aea, lcc, tmerc/etmerc/utm, merc/webmerc, eqc, moll, geos, somerc, geocent.
-Not yet available: `ortho` (absent upstream), `aeqd` (upstream feature
-depends on a C geodesic library, so it is off for wasm). Both are candidates
-for pure-Rust contributions to proj4rs.
+aea, lcc, tmerc/etmerc/utm, merc/webmerc, eqc, moll, geos, somerc, geocent,
+ortho. Not yet available: `aeqd` (upstream feature depends on a C geodesic
+library, so it is off for wasm), a candidate for a pure-Rust contribution to
+proj4rs.

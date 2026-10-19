@@ -406,13 +406,15 @@ wasm-bindgen, `Warper.warp_rgba` / `warp_f32`). It is handed CRSs as the
 definition strings `crsDefinition()` gives out - the handoff the
 `check-crs.py` contract exists for - and geotransforms in GDAL order.
 rwarp's CRS backend is proj4rs, which parses a smaller set than proj4js or
-PROJ (laea, stere, aea, lcc, tmerc/utm, merc, eqc, moll, geos, somerc; not
-ortho, aeqd or the ports). When it declines, two things can happen:
+PROJ (laea, stere, aea, lcc, tmerc/utm, merc, eqc, moll, geos, somerc,
+ortho; not aeqd, gnom or the ports). When it declines, two things can happen:
 
 - with rwarp-wasm 0.1.1 or later, **rwarp keeps warping and proj4js does the
   projecting**: `Warper.withTransforms` takes the CRS transforms as
-  JavaScript functions called per point, so ortho, aeqd and the five ports
-  get rwarp's kernels at rwarp's speed (caption: `rwarp+proj4js`);
+  JavaScript functions called per point, so aeqd, gnom and the five ports
+  get rwarp's kernels at rwarp's speed (caption: `rwarp+proj4js`); an
+  inverse that does not round-trip within a pixel is refused, as in the
+  reference;
 - otherwise, and for PROJ-only CRSs (which answer asynchronously, and the
   callback must not), a **reference warp** in plain JavaScript takes over -
   every destination pixel inverse-projected through the viewer's own

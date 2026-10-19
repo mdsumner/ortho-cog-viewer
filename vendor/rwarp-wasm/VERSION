@@ -1,4 +1,5 @@
-rwarp-wasm 0.1.0, built with wasm-pack --target web --release from
-hypertidy/rwarp (rwarp 0.1.2, proj4rs backend). Interim vendoring: replace
-with the npm package (tools/bundle-rwarp.mjs prefers node_modules) once
-rwarp-wasm is published, and delete this folder.
+rwarp-wasm 0.1.0, built with cargo + wasm-bindgen 0.2.129 --target web and
+wasm-opt -O3 from hypertidy/rwarp 20572c3 (rwarp 0.1.2, proj4rs backend), with
+proj4rs pinned to 3liz/proj4rs@764671b (main, includes ortho; no release yet).
+Interim vendoring: replace with the npm package (tools/bundle-rwarp.mjs
+prefers node_modules) once rwarp-wasm is published, and delete this folder.

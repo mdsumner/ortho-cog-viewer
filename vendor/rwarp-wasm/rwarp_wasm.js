@@ -166,6 +166,12 @@ export class Projection {
 if (Symbol.dispose) Projection.prototype[Symbol.dispose] = Projection.prototype.free;
 
 export class Warper {
+    static __wrap(ptr) {
+        const obj = Object.create(Warper.prototype);
+        obj.__wbg_ptr = ptr;
+        WarperFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -279,20 +285,44 @@ export class Warper {
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v3;
     }
+    /**
+     * Build a warper whose CRS transforms are JavaScript functions rather
+     * than proj4rs: `dst_to_src(x, y, out)` and `src_to_dst(x, y, out)`
+     * each write `[x, y]` into `out` (a `Float64Array` of length 2) and
+     * return `true`, or return `false` for a point they cannot transform.
+     * Everything downstream - the approximate transformer, the source
+     * window, the kernels - is the same as for `new`; only who does the
+     * projecting changes. This is how a page with proj4js or a PROJ build
+     * lends rwarp a projection proj4rs does not have.
+     * @param {Float64Array} src_gt
+     * @param {Float64Array} dst_gt
+     * @param {any} dst_to_src
+     * @param {any} src_to_dst
+     * @param {number} max_error
+     * @returns {Warper}
+     */
+    static withTransforms(src_gt, dst_gt, dst_to_src, src_to_dst, max_error) {
+        const ptr0 = passArrayF64ToWasm0(src_gt, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(dst_gt, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.warper_withTransforms(ptr0, len0, ptr1, len1, dst_to_src, src_to_dst, max_error);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Warper.__wrap(ret[0]);
+    }
 }
 if (Symbol.dispose) Warper.prototype[Symbol.dispose] = Warper.prototype.free;
 
 /**
- * Read a binary NTv2 from Dataview.
- *
- * Note: only NTv2 file format are supported.
  * @param {string} key
- * @param {DataView} view
+ * @param {Uint8Array} array
  */
-export function add_nadgrid(key, view) {
+export function add_nadgrid(key, array) {
     const ptr0 = passStringToWasm0(key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.add_nadgrid(ptr0, len0, view);
+    const ret = wasm.add_nadgrid(ptr0, len0, array);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -355,51 +385,51 @@ export function transform(src, dst, point) {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg_Error_67e7344beaa85059: function(arg0, arg1) {
+        __wbg_Error_30c8987f7c2ed4e2: function(arg0, arg1) {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg___wbindgen_string_get_92ab86bb19cbc12f: function(arg0, arg1) {
-            const obj = arg1;
-            const ret = typeof(obj) === 'string' ? obj : undefined;
-            var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            var len1 = WASM_VECTOR_LEN;
-            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
-            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        __wbg___wbindgen_is_falsy_16bd49b68658263e: function(arg0) {
+            const ret = !arg0;
+            return ret;
         },
-        __wbg___wbindgen_throw_5d9e815e6fdf150f: function(arg0, arg1) {
+        __wbg___wbindgen_is_function_1f9d30630b8b1d3d: function(arg0) {
+            const ret = typeof(arg0) === 'function';
+            return ret;
+        },
+        __wbg___wbindgen_throw_41e9ee4f547fc59a: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_buffer_c27c889ba070c21b: function(arg0) {
-            const ret = arg0.buffer;
+        __wbg_call_939a2607c4484b0b: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            const ret = arg0.call(arg1, arg2, arg3, arg4);
+            return ret;
+        }, arguments); },
+        __wbg_get_index_f4750150bb3083b3: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
             return ret;
         },
-        __wbg_getFloat32_b8cd99a789ec5e74: function(arg0, arg1, arg2) {
-            const ret = arg0.getFloat32(arg1 >>> 0, arg2 !== 0);
+        __wbg_length_7f3c00c40364105e: function(arg0) {
+            const ret = arg0.length;
             return ret;
         },
-        __wbg_getFloat64_998dac9e6995f949: function(arg0, arg1, arg2) {
-            const ret = arg0.getFloat64(arg1 >>> 0, arg2 !== 0);
+        __wbg_new_with_length_3827645dc5adb679: function(arg0) {
+            const ret = new Float64Array(arg0 >>> 0);
             return ret;
         },
-        __wbg_getInt32_a5865f645739ea75: function(arg0, arg1, arg2) {
-            const ret = arg0.getInt32(arg1 >>> 0, arg2 !== 0);
-            return ret;
-        },
-        __wbg_getUint32_9bffc156542cfb8d: function(arg0, arg1, arg2) {
-            const ret = arg0.getUint32(arg1 >>> 0, arg2 !== 0);
-            return ret;
-        },
-        __wbg_parseFloat_fafa77c26c8e9c71: function(arg0, arg1) {
+        __wbg_parseFloat_a9cb882d5665c6cb: function(arg0, arg1) {
             const ret = parseFloat(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg_parseInt_11b7438181a4ff9e: function(arg0, arg1, arg2) {
+        __wbg_parseInt_9756a56948abd94c: function(arg0, arg1, arg2) {
             const ret = parseInt(getStringFromWasm0(arg0, arg1), arg2);
             return ret;
         },
-        __wbg_slice_cd2bd2157da68e8e: function(arg0, arg1, arg2) {
-            const ret = arg0.slice(arg1 >>> 0, arg2 >>> 0);
+        __wbg_prototypesetcall_bc27214492979395: function(arg0, arg1, arg2) {
+            Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
+        __wbindgen_generic_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
             return ret;
         },
         __wbindgen_init_externref_table: function() {
@@ -428,6 +458,12 @@ const WarperFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_warper_free(ptr, 1));
 
+function addToExternrefTable0(obj) {
+    const idx = wasm.__externref_table_alloc();
+    wasm.__wbindgen_externrefs.set(idx, obj);
+    return idx;
+}
+
 function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
@@ -452,14 +488,6 @@ function getArrayI32FromWasm0(ptr, len) {
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
-}
-
-let cachedDataViewMemory0 = null;
-function getDataViewMemory0() {
-    if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
-        cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
-    }
-    return cachedDataViewMemory0;
 }
 
 let cachedFloat32ArrayMemory0 = null;
@@ -498,8 +526,13 @@ function getUint8ArrayMemory0() {
     return cachedUint8ArrayMemory0;
 }
 
-function isLikeNone(x) {
-    return x === undefined || x === null;
+function handleError(f, args) {
+    try {
+        return f.apply(this, args);
+    } catch (e) {
+        const idx = addToExternrefTable0(e);
+        wasm.__wbindgen_exn_store(idx);
+    }
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -600,7 +633,6 @@ function __wbg_finalize_init(instance, module) {
     wasmInstance = instance;
     wasm = instance.exports;
     wasmModule = module;
-    cachedDataViewMemory0 = null;
     cachedFloat32ArrayMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
     cachedInt32ArrayMemory0 = null;
