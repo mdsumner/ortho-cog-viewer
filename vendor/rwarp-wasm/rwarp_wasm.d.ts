@@ -51,14 +51,20 @@ export class Warper {
      * `nearest | bilinear | cubic | lanczos`.
      */
     warp_rgba(src: Uint8Array, src_w: number, src_h: number, src_xoff: number, src_yoff: number, dst_w: number, dst_h: number, alg: string): Uint8Array;
+    /**
+     * Build a warper whose CRS transforms are JavaScript functions rather
+     * than proj4rs: `dst_to_src(x, y, out)` and `src_to_dst(x, y, out)`
+     * each write `[x, y]` into `out` (a `Float64Array` of length 2) and
+     * return `true`, or return `false` for a point they cannot transform.
+     * Everything downstream - the approximate transformer, the source
+     * window, the kernels - is the same as for `new`; only who does the
+     * projecting changes. This is how a page with proj4js or a PROJ build
+     * lends rwarp a projection proj4rs does not have.
+     */
+    static withTransforms(src_gt: Float64Array, dst_gt: Float64Array, dst_to_src: any, src_to_dst: any, max_error: number): Warper;
 }
 
-/**
- * Read a binary NTv2 from Dataview.
- *
- * Note: only NTv2 file format are supported.
- */
-export function add_nadgrid(key: string, view: DataView): void;
+export function add_nadgrid(key: string, array: Uint8Array): void;
 
 /**
  * Inverse of [`lonlat_to_crs`]: `[lon, lat]` in degrees or `undefined`.
@@ -104,9 +110,12 @@ export interface InitOutput {
     readonly warper_source_window: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly warper_warp_f32: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
     readonly warper_warp_rgba: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number, number];
+    readonly warper_withTransforms: (a: number, b: number, c: number, d: number, e: any, f: any, g: number) => [number, number, number];
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;

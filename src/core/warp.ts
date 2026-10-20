@@ -90,8 +90,11 @@ interface RwarpModule {
  * if proj4js cannot execute either CRS. Synchronous by necessity: the
  * callback happens inside rwarp's transform loop. That is why PROJ-only
  * CRSs cannot take this route yet - PROJ in wasm answers asynchronously.
+ * dst -> src refuses a point that does not come home within tol (display
+ * units), as the reference and the mesh do: proj4js clamps or guesses some
+ * inverses beyond a projection's edge rather than refusing them.
  */
-function proj4jsPointFns(srcCrs: string, dstCrs: string): [PointFn, PointFn] | null {
+function proj4jsPointFns(srcCrs: string, dstCrs: string, tol = Infinity): [PointFn, PointFn] | null {
   let d2s: { forward(p: number[]): number[] }, s2d: { forward(p: number[]): number[] };
   try {
     const s = forProj4js(srcCrs), d = forProj4js(dstCrs);
@@ -110,7 +113,13 @@ function proj4jsPointFns(srcCrs: string, dstCrs: string): [PointFn, PointFn] | n
       return false;
     }
   };
-  return [call(d2s), call(s2d)];
+  const toSrc = call(d2s), fwd = call(s2d), back = new Float64Array(2);
+  const inv: PointFn = (x, y, out) => {
+    if (!toSrc(x, y, out) || !fwd(out[0], out[1], back)) return false;
+    const ex = back[0] - x, ey = back[1] - y;
+    return ex * ex + ey * ey <= tol * tol;
+  };
+  return [inv, fwd];
 }
 
 
@@ -153,7 +162,7 @@ export function rwarpBackend(mod: RwarpModule): WarpBackend {
       return { w: new mod.Warper(job.srcCrs, job.srcGt, job.dstCrs, job.dstGt, job.maxError ?? 0.125), name: 'rwarp' };
     }
     if (r === 'proj4js') {
-      const [d2s, s2d] = proj4jsPointFns(job.srcCrs, job.dstCrs)!;
+      const [d2s, s2d] = proj4jsPointFns(job.srcCrs, job.dstCrs, Math.abs(job.dstGt[1]))!;
       return { w: mod.Warper.withTransforms!(job.srcGt, job.dstGt, d2s, s2d, job.maxError ?? 0.125), name: 'rwarp+proj4js' };
     }
     throw new Error(r);
