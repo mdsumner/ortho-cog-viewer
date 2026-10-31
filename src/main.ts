@@ -44,7 +44,7 @@ setDefinitionProvider(projWasmProvider);
 
 type Mode = 'fixed' | 'centred';
 
-const DEFAULT_EXTENT = Math.PI * 6378137 * 2;  // ~40M meters
+const DEFAULT_EXTENT = Math.PI * 6378137;  // half the Web Mercator world, ~20M metres
 const MAX_VERTICES = 66000;  // ~256x256 grid max
 const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif';
 
@@ -149,6 +149,8 @@ let displayCrsInput: HTMLInputElement;
 let extentInput: HTMLInputElement;
 let projSelect: HTMLSelectElement;
 let projTemplateInput: HTMLInputElement;
+let projTemplateRow: HTMLElement;
+let warpRow: HTMLElement;
 let centreLonInput: HTMLInputElement;
 let centreLatInput: HTMLInputElement;
 let gridSizeInput: HTMLInputElement;
@@ -969,15 +971,56 @@ function formatRes(v: number): string {
   return `${v.toFixed(3)} m`;
 }
 
+/**
+ * The layer list. Engines report every fetch, so this runs often, and
+ * rebuilding a layer's controls under a finger closes its dropdown or drops
+ * a half-typed number. So each layer has its own box, rebuilt only when its
+ * controls actually change and not while one of them has focus; the status
+ * line (level, loading, on-globe) is plain text set on its own.
+ */
 function updateUI(): void {
-  layersEl.innerHTML = layers.map(layer => {
+  const boxes = new Map<string, HTMLElement>();
+  for (const el of Array.from(layersEl.children) as HTMLElement[]) boxes.set(el.dataset.box || '', el);
+  const keep = new Set(layers.map(l => String(l.id)));
+  for (const [id, el] of boxes) if (!keep.has(id)) el.remove();
+  layers.forEach((layer, i) => {
+    const id = String(layer.id);
+    let box = boxes.get(id);
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'layer-box';
+      box.dataset.box = id;
+    }
+    if (layersEl.children[i] !== box) layersEl.insertBefore(box, layersEl.children[i] || null);
+    const html = layerControlsHtml(layer);
+    const busy = box.contains(document.activeElement) && document.activeElement !== box &&
+      /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement!.tagName);
+    if (box.dataset.html !== html && !busy) {
+      box.innerHTML = html;
+      box.dataset.html = html;
+      drawHistogram(layer);
+    } else if (busy && box.dataset.html !== html) {
+      box.addEventListener('focusout', () => window.setTimeout(updateUI, 0), { once: true });
+    }
+    const status = box.querySelector(`[data-status="${id}"]`);
+    if (status) status.textContent = layerStatusText(layer);
+  });
+}
+
+function layerStatusText(layer: Layer): string {
+  const src = layer.source;
+  const st8 = layer.engine.status();
+  const res = st8.hasTexture ? src.levels[st8.level].resolution : NaN;
+  const unit = /4326|4269|longlat/.test(src.crs) ? 'deg' : 'm';
+  const lvl = st8.hasTexture ? `${formatUnits(res, unit)}/px ${st8.textureSize}` : '...';
+  const loading = st8.loading ? ' (loading)' : '';
+  const pct = Math.round(st8.validFraction * 100);
+  return `(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)`;
+}
+
+function layerControlsHtml(layer: Layer): string {
+  {
     const src = layer.source;
-    const st8 = layer.engine.status();
-    const res = st8.hasTexture ? src.levels[st8.level].resolution : NaN;
-    const unit = /4326|4269|longlat/.test(src.crs) ? 'deg' : 'm';
-    const lvl = st8.hasTexture ? `${formatUnits(res, unit)}/px ${st8.textureSize}` : '...';
-    const loading = st8.loading ? ' (loading)' : '';
-    const pct = Math.round(st8.validFraction * 100);
     const attr = src.attribution ? `<div class="attribution">${src.attribution}</div>` : '';
     let scaleRow = '';
     if (layer.scale) {
@@ -1047,15 +1090,14 @@ function updateUI(): void {
         <button data-remove="${layer.id}" title="Remove layer">x</button>
         <button data-fit="${layer.id}" title="Centre the view on this layer">fit</button>
         <span title="${layer.url}">${src.label}</span>
-        <span>(${src.kind} ${src.crs}, ${lvl}${loading}, ${pct}% on-globe)</span>
+        <span data-status="${layer.id}"></span>
       </div>${layer.engine instanceof WarpEngine ? `<div class="alpha-row">${layer.engine.describe()}</div>` : ''}
       <div class="alpha-row">
         alpha <input type="range" min="0" max="1" step="0.02" value="${layer.opacity}" data-alpha="${layer.id}" />
         <span data-alpha-val="${layer.id}">${Math.round(layer.opacity * 100)}%</span>
       </div>${scaleRow}${attr}
     `;
-  }).join('');
-  for (const layer of layers) drawHistogram(layer);
+  }
 }
 
 /**
@@ -1311,7 +1353,8 @@ function syncUI(): void {
     projSelect.value = 'custom';
     projTemplateInput.value = centredProj;
   }
-  projTemplateInput.hidden = projSelect.value !== 'custom';
+  projTemplateRow.hidden = projSelect.value !== 'custom';
+  warpRow.hidden = engineKind !== 'warp';
   syncCentreInputs();
   updateVertexCount();
 }
@@ -1426,11 +1469,17 @@ function shareLink(): void {
   const rel = viewUrl(true);
   history.replaceState(null, '', rel);
   const abs = new URL(rel, location.href).href;
+  const btn = document.getElementById('link-btn')!;
+  const say = (msg: string) => {
+    btn.textContent = msg;
+    window.setTimeout(() => { btn.textContent = 'link'; }, 1500);
+  };
   if (navigator.clipboard) {
     navigator.clipboard.writeText(abs).then(
-      () => console.log('Link copied:', abs),
-      () => console.log('Link (copy by hand):', abs));
+      () => { say('copied'); console.log('Link copied:', abs); },
+      () => { say('in address bar'); console.log('Link (copy by hand):', abs); });
   } else {
+    say('in address bar');
     console.log('Link (copy by hand):', abs);
   }
 }
@@ -1454,6 +1503,8 @@ async function main() {
   extentInput = document.getElementById('extent') as HTMLInputElement;
   projSelect = document.getElementById('proj') as HTMLSelectElement;
   projTemplateInput = document.getElementById('proj-template') as HTMLInputElement;
+  projTemplateRow = document.getElementById('proj-template-row')!;
+  warpRow = document.getElementById('warp-row')!;
   centreLonInput = document.getElementById('centre-lon') as HTMLInputElement;
   centreLatInput = document.getElementById('centre-lat') as HTMLInputElement;
   gridSizeInput = document.getElementById('grid-size') as HTMLInputElement;
@@ -1505,7 +1556,9 @@ async function main() {
   container.appendChild(canvas);
 
   function resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
+    // Capped at 2: a 3x phone screen is more than twice the pixels to fill
+    // for a difference nobody can see in an interpolated raster.
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
     const rect = canvas.getBoundingClientRect();
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
@@ -1619,6 +1672,7 @@ async function main() {
   (document.getElementById('reset-btn') as HTMLButtonElement).addEventListener('click', resetAll);
   engineSelect.addEventListener('change', () => {
     engineKind = engineSelect.value as EngineKind;
+    warpRow.hidden = engineKind !== 'warp';
     rebuildEngines();
     scheduleUrlUpdate();
   });
@@ -1644,16 +1698,27 @@ async function main() {
     updateUI();
     scheduleUrlUpdate();
   });
+  // A choice from a list takes effect at once; typed values wait for Enter
+  // or Apply, so a half-typed CRS is never tried.
   modeSelect.addEventListener('change', () => {
     fixedPanel.hidden = modeSelect.value !== 'fixed';
     centredPanel.hidden = modeSelect.value !== 'centred';
+    void applyDisplaySettings();
   });
   projSelect.addEventListener('change', () => {
-    projTemplateInput.hidden = projSelect.value !== 'custom';
+    projTemplateRow.hidden = projSelect.value !== 'custom';
     if (projSelect.value !== 'custom') {
       projTemplateInput.value = CENTRED_PRESETS[projSelect.value].template;
+      void applyDisplaySettings();
+    } else {
+      projTemplateInput.focus();
     }
   });
+  for (const el of [displayCrsInput, extentInput, projTemplateInput, centreLonInput, centreLatInput, gridSizeInput]) {
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); void applyDisplaySettings(); }
+    });
+  }
   gridSizeInput.addEventListener('input', () => {
     const size = parseInt(gridSizeInput.value) || 32;
     const verts = (size + 1) * (size + 1);
@@ -1776,14 +1841,25 @@ async function main() {
     applyScale(layer, get('data-min') !== null ? { min: v, auto: false } : { max: v, auto: false });
     drawHistogram(layer);
   });
+  // The panel starts folded away on a narrow screen, where it would
+  // otherwise cover the map.
+  const controlsEl = document.getElementById('controls')!;
+  const setCollapsed = (c: boolean) => {
+    controlsEl.classList.toggle('collapsed', c);
+    panelToggle.textContent = c ? 'controls' : 'hide';
+    panelToggle.setAttribute('aria-expanded', String(!c));
+  };
+  setCollapsed(window.matchMedia('(max-width: 640px)').matches);
   panelToggle.addEventListener('click', () => {
-    document.getElementById('controls')!.classList.toggle('collapsed');
+    setCollapsed(!controlsEl.classList.contains('collapsed'));
   });
 
   // Load layers from URL params, or the default
   const urls = params.getAll('url');
   if (urls.length === 0) urls.push(DEFAULT_COG);
-  urlInput.value = urls[0];
+  // Leave the box empty for the default layer, so its placeholder says
+  // what can go there; a layer from the URL is shown so it can be edited.
+  if (params.getAll('url').length) urlInput.value = urls[0];
   for (const u of urls) {
     await addLayer(u);
   }

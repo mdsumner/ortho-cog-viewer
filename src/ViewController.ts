@@ -43,44 +43,148 @@ export class ViewController {
 
   private setupEventListeners(): void {
     const canvas = this.canvas;
-    
-    // Mouse events
-    canvas.addEventListener('mousedown', this.onMouseDown);
-    canvas.addEventListener('mousemove', this.onMouseMove);
-    canvas.addEventListener('mouseup', this.onMouseUp);
-    canvas.addEventListener('mouseleave', this.onMouseUp);
+    // One code path for mouse, pen and touch. touch-action: none hands
+    // every gesture on the map to us (no page scroll, no browser zoom).
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', this.onPointerDown);
+    canvas.addEventListener('pointermove', this.onPointerMove);
+    canvas.addEventListener('pointerup', this.onPointerUp);
+    canvas.addEventListener('pointercancel', this.onPointerUp);
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
-    
-    // Touch events
-    canvas.addEventListener('touchstart', this.onTouchStart, { passive: false });
-    canvas.addEventListener('touchmove', this.onTouchMove, { passive: false });
-    canvas.addEventListener('touchend', this.onTouchEnd);
-    
-    // Resize
+    canvas.addEventListener('dblclick', this.onDoubleClick);
     window.addEventListener('resize', this.onResize);
   }
 
-  private onMouseDown = (e: MouseEvent): void => {
+  /** Pointers currently down on the map, by id, at their last position. */
+  private pointers = new Map<number, { x: number; y: number }>();
+  /** Two-pointer gesture baseline: distance, zoom and midpoint at its start. */
+  private pinchDist = 0;
+  private pinchZoom = 0;
+  private pinchMidX = 0;
+  private pinchMidY = 0;
+  /** For double-tap on touch, which does not fire dblclick everywhere. */
+  private lastTapTime = 0;
+  private lastTapX = 0;
+  private lastTapY = 0;
+  private moved = false;
+  /** Touch double-taps are handled on pointerup; a dblclick after one is not ours. */
+  private lastPointerType = 'mouse';
+
+  private local(e: { clientX: number; clientY: number }): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  /**
+   * (Re)start the gesture from the pointers now down. Called whenever a
+   * finger lands or lifts, so going from two fingers to one (or back) carries
+   * on smoothly instead of jumping.
+   */
+  private beginGesture(): void {
+    const pts = [...this.pointers.values()];
+    if (pts.length === 1) {
+      this.lastX = pts[0].x;
+      this.lastY = pts[0].y;
+    } else if (pts.length >= 2) {
+      const [a, b] = pts;
+      this.pinchDist = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+      this.pinchZoom = this.state.zoom;
+      this.pinchMidX = (a.x + b.x) / 2;
+      this.pinchMidY = (a.y + b.y) / 2;
+    }
+  }
+
+  private onPointerDown = (e: PointerEvent): void => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    this.lastPointerType = e.pointerType;
+    this.canvas.setPointerCapture(e.pointerId);
+    this.pointers.set(e.pointerId, this.local(e));
+    if (this.pointers.size === 1) {
+      this.moved = false;
+      this.state.shift = e.shiftKey;
+    } else {
+      // A second finger: a pinch, which is never a look-around.
+      this.state.shift = false;
+    }
     this.isDragging = true;
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
-    this.state.shift = e.shiftKey;
     this.state.dragging = true;
     this.canvas.style.cursor = 'grabbing';
+    this.beginGesture();
   };
 
-  private onMouseMove = (e: MouseEvent): void => {
-    if (!this.isDragging) return;
-    
-    const dx = e.clientX - this.lastX;
-    const dy = e.clientY - this.lastY;
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
-    
-    this.pan(dx, dy);
+  private onPointerMove = (e: PointerEvent): void => {
+    if (!this.pointers.has(e.pointerId)) return;
+    const p = this.local(e);
+    this.pointers.set(e.pointerId, p);
+    const pts = [...this.pointers.values()];
+    if (pts.length === 1) {
+      const dx = p.x - this.lastX;
+      const dy = p.y - this.lastY;
+      if (dx === 0 && dy === 0) return;
+      this.lastX = p.x;
+      this.lastY = p.y;
+      this.moved = true;
+      this.pan(dx, dy);
+      return;
+    }
+    // Two fingers: zoom by the change in spread, about the midpoint, and
+    // pan by the midpoint's own movement.
+    const [a, b] = pts;
+    const dist = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+    const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+    this.moved = true;
+    this.applyPinch(midX, midY, this.pinchZoom + Math.log2(dist / this.pinchDist));
   };
 
-  private onMouseUp = (): void => {
+  /**
+   * Set zoom so the world point that was under the gesture's starting
+   * midpoint is now under the current midpoint: one state change, one
+   * onChange, for both the zoom and the pan of a two-finger gesture.
+   */
+  private applyPinch(midX: number, midY: number, zoom: number): void {
+    const z = Math.max(-20, Math.min(10, zoom));
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    const s0 = Math.pow(2, this.state.zoom);
+    // The world point under the starting midpoint, in the current state.
+    const wx = this.state.centerX + (this.pinchMidX - w / 2) / s0;
+    const wy = this.state.centerY - (this.pinchMidY - h / 2) / s0;
+    const s1 = Math.pow(2, z);
+    this.state.zoom = z;
+    this.state.centerX = wx - (midX - w / 2) / s1;
+    this.state.centerY = wy + (midY - h / 2) / s1;
+    this.pinchMidX = midX;
+    this.pinchMidY = midY;
+    this.onChange(this.state);
+  }
+
+  private onPointerUp = (e: PointerEvent): void => {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.delete(e.pointerId);
+    if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+    if (this.pointers.size > 0) {
+      // Still a finger down: carry on from where it is.
+      this.beginGesture();
+      return;
+    }
+    // Double tap on touch zooms in on the tap (dblclick covers the mouse).
+    if (e.pointerType !== 'mouse' && !this.moved && e.type === 'pointerup') {
+      const p = this.local(e);
+      const now = performance.now();
+      if (now - this.lastTapTime < 300 && Math.hypot(p.x - this.lastTapX, p.y - this.lastTapY) < 30) {
+        this.lastTapTime = 0;
+        this.finishDrag();
+        this.zoomAt(p.x, p.y, 1);
+        return;
+      }
+      this.lastTapTime = now;
+      this.lastTapX = p.x;
+      this.lastTapY = p.y;
+    }
+    this.finishDrag();
+  };
+
+  private finishDrag(): void {
     const wasDragging = this.isDragging;
     this.isDragging = false;
     this.state.dragging = false;
@@ -90,80 +194,29 @@ export class ViewController {
     // classified like the drag it ends.
     if (wasDragging) this.onChange(this.state);
     this.state.shift = false;
+  }
+
+  private onDoubleClick = (e: MouseEvent): void => {
+    e.preventDefault();
+    if (this.lastPointerType !== 'mouse') return;
+    const p = this.local(e);
+    this.zoomAt(p.x, p.y, e.shiftKey ? -1 : 1);
   };
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
     this.state.shift = false;
-    
-    // Zoom centered on mouse position
-    const rect = this.canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    
-    // Normalize delta across browsers
-    const delta = -Math.sign(e.deltaY) * 0.1;
-    
-    this.zoomAt(mouseX, mouseY, delta);
-  };
-
-  // Touch handling for pinch zoom
-  private touchStartDist = 0;
-  private touchStartZoom = 0;
-  private touchStartCenter = { x: 0, y: 0 };
-
-  private onTouchStart = (e: TouchEvent): void => {
-    e.preventDefault();
-    
-    this.state.shift = false;
-    if (e.touches.length === 1) {
-      this.isDragging = true;
-      this.state.dragging = true;
-      this.lastX = e.touches[0].clientX;
-      this.lastY = e.touches[0].clientY;
-    } else if (e.touches.length === 2) {
-      // Pinch zoom
-      this.isDragging = false;
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      this.touchStartDist = Math.sqrt(dx * dx + dy * dy);
-      this.touchStartZoom = this.state.zoom;
-      this.touchStartCenter = {
-        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-        y: (e.touches[0].clientY + e.touches[1].clientY) / 2
-      };
-    }
-  };
-
-  private onTouchMove = (e: TouchEvent): void => {
-    e.preventDefault();
-    
-    if (e.touches.length === 1 && this.isDragging) {
-      const dx = e.touches[0].clientX - this.lastX;
-      const dy = e.touches[0].clientY - this.lastY;
-      this.lastX = e.touches[0].clientX;
-      this.lastY = e.touches[0].clientY;
-      this.pan(dx, dy);
-    } else if (e.touches.length === 2) {
-      const dx = e.touches[1].clientX - e.touches[0].clientX;
-      const dy = e.touches[1].clientY - e.touches[0].clientY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const scale = dist / this.touchStartDist;
-      const newZoom = this.touchStartZoom + Math.log2(scale);
-      
-      const rect = this.canvas.getBoundingClientRect();
-      const cx = this.touchStartCenter.x - rect.left;
-      const cy = this.touchStartCenter.y - rect.top;
-      
-      this.setZoomAt(cx, cy, newZoom);
-    }
-  };
-
-  private onTouchEnd = (): void => {
-    const wasDragging = this.isDragging;
-    this.isDragging = false;
-    this.state.dragging = false;
-    if (wasDragging) this.onChange(this.state);
+    const p = this.local(e);
+    // Proportional to the scroll: a trackpad sends many small deltas and a
+    // mouse wheel a few big ones, and both should feel the same. Line and
+    // page modes are converted to pixels; 500 px of scroll is one doubling.
+    const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.canvas.clientHeight : 1;
+    let delta = -e.deltaY * scale / 500;
+    // ctrl+wheel is a trackpad pinch in Chrome, Safari and Firefox; its
+    // deltas are small, so speed it up to track the fingers.
+    if (e.ctrlKey) delta *= 4;
+    delta = Math.max(-1, Math.min(1, delta));
+    this.zoomAt(p.x, p.y, delta);
   };
 
   private onResize = (): void => {
@@ -250,14 +303,12 @@ export class ViewController {
 
   destroy(): void {
     const canvas = this.canvas;
-    canvas.removeEventListener('mousedown', this.onMouseDown);
-    canvas.removeEventListener('mousemove', this.onMouseMove);
-    canvas.removeEventListener('mouseup', this.onMouseUp);
-    canvas.removeEventListener('mouseleave', this.onMouseUp);
+    canvas.removeEventListener('pointerdown', this.onPointerDown);
+    canvas.removeEventListener('pointermove', this.onPointerMove);
+    canvas.removeEventListener('pointerup', this.onPointerUp);
+    canvas.removeEventListener('pointercancel', this.onPointerUp);
     canvas.removeEventListener('wheel', this.onWheel);
-    canvas.removeEventListener('touchstart', this.onTouchStart);
-    canvas.removeEventListener('touchmove', this.onTouchMove);
-    canvas.removeEventListener('touchend', this.onTouchEnd);
+    canvas.removeEventListener('dblclick', this.onDoubleClick);
     window.removeEventListener('resize', this.onResize);
   }
 }

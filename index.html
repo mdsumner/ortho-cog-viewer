@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#1a1a1a" />
     <title>Ortho COG Viewer</title>
     <style>
       * {
@@ -10,101 +11,111 @@
         padding: 0;
         box-sizing: border-box;
       }
-      body {
-        width: 100vw;
-        height: 100vh;
+      [hidden] {
+        display: none !important;
+      }
+      html, body {
+        width: 100%;
+        height: 100%;
+        height: 100dvh;
         overflow: hidden;
+        overscroll-behavior: none;
+        background: #1a1a1a;
       }
       #app {
         width: 100%;
         height: 100%;
       }
+      #app canvas {
+        display: block;
+        touch-action: none;
+      }
+
+      /* The panel: a floating card on a desktop, a bottom sheet on a phone. */
       #controls {
         position: absolute;
         top: 10px;
         left: 10px;
-        background: rgba(0,0,0,0.8);
-        color: white;
-        padding: 10px;
-        font-family: monospace;
+        width: 400px;
+        max-width: calc(100vw - 20px);
+        max-height: calc(100% - 20px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        background: rgba(0, 0, 0, 0.82);
+        color: #eee;
+        padding: 8px 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 12px;
         z-index: 100;
-        max-width: 460px;
-        max-height: calc(100vh - 20px);
-        overflow-y: auto;
-        box-sizing: border-box;
-        border-radius: 4px;
+        border-radius: 6px;
       }
-      #controls input[type="text"] {
-        width: 280px;
-        padding: 4px;
-        font-family: monospace;
+      #controls input, #controls select, #controls button {
+        font-family: inherit;
         font-size: 11px;
-        margin: 5px 0;
       }
-      #controls input.small {
-        width: 50px;
-      }
-      #controls input.crs {
-        width: 120px;
-      }
-      #controls input.extent {
-        width: 280px;
-      }
-      #vertex-count {
-        color: #aaa;
-        font-size: 10px;
+      #controls input[type="text"], #controls input[type="number"] {
+        padding: 3px 4px;
+        min-width: 0;
       }
       #controls button {
-        padding: 4px 8px;
+        padding: 3px 8px;
         cursor: pointer;
-        font-family: monospace;
       }
-      #controls label {
-        display: inline-block;
-        width: 45px;
-        text-align: right;
-        margin-right: 4px;
+      #controls select {
+        padding: 2px;
+        min-width: 0;
+        max-width: 100%;
+      }
+      fieldset {
+        min-width: 0;
+        border: 1px solid #444;
+        padding: 6px;
+        margin: 6px 0;
+        border-radius: 4px;
+      }
+      legend {
+        padding: 0 4px;
+        color: #ccc;
       }
       .control-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 6px;
         margin: 4px 0;
       }
-      #info {
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid #444;
+      .control-row > * {
+        min-width: 0;
+        max-width: 100%;
       }
-      #layers {
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid #444;
+      .control-row > label:first-child {
+        flex: 0 0 6.5em;
+        white-space: nowrap;
+        text-align: right;
+        color: #ccc;
       }
-      .layer-item {
-        flex-wrap: wrap;
+      .control-row .grow {
+        flex: 1 1 8em;
       }
-      .alpha-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 1px 0 1px 40px;
-        font-size: 10px;
-        color: #aaa;
+      .control-row .indent {
+        margin-left: calc(6.5em + 6px);
       }
-      .alpha-row input[type="range"] {
-        width: 120px;
-        margin: 0;
+      .checks label {
+        margin-right: 8px;
+        white-space: nowrap;
       }
-      .layer-item {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        padding: 2px 0;
+      input.small {
+        width: 6em;
+      }
+      .hint {
+        color: #999;
         font-size: 10px;
       }
-      .layer-item button {
-        padding: 1px 4px;
+      #vertex-count {
+        color: #999;
         font-size: 10px;
       }
+
       .title-row {
         display: flex;
         align-items: center;
@@ -119,39 +130,72 @@
         display: flex;
         gap: 4px;
       }
-      .file-btn {
-        display: inline-block;
-        padding: 2px 6px;
-        border: 1px solid #666;
-        border-radius: 2px;
-        background: #333;
-        color: #ddd;
-        font-size: 11px;
-        cursor: pointer;
-      }
-      .file-btn:hover { background: #444; }
-      .title-row .links button {
+      #controls .title-row .links button {
         font-size: 10px;
-        padding: 1px 5px;
+        padding: 2px 6px;
       }
       #controls.collapsed fieldset,
       #controls.collapsed #info {
         display: none;
       }
-      #controls select {
-        font-family: monospace;
-        font-size: 11px;
-        padding: 3px;
-        max-width: 280px;
+
+      .url-row {
+        display: flex;
+        gap: 4px;
+        margin: 2px 0 4px;
       }
+      .url-row input {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .file-btn {
+        display: inline-block;
+        padding: 3px 8px;
+        border: 1px solid #666;
+        border-radius: 3px;
+        background: #333;
+        color: #ddd;
+        font-size: 11px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .file-btn:hover { background: #444; }
       #wmts-layer {
         max-width: 200px;
       }
-      #wmts-picker input.small {
-        width: 70px;
+
+      #layers {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #444;
       }
-      #controls input.small {
-        width: 60px;
+      #layers:empty {
+        display: none;
+      }
+      .layer-item {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 0;
+        font-size: 10px;
+        overflow-wrap: anywhere;
+      }
+      #controls .layer-item button {
+        padding: 1px 6px;
+        font-size: 10px;
+      }
+      .alpha-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 1px 0 1px 40px;
+        font-size: 10px;
+        color: #aaa;
+      }
+      .alpha-row input[type="range"] {
+        width: 120px;
+        margin: 0;
       }
       #controls label.wide {
         width: auto;
@@ -159,6 +203,7 @@
       }
       .scale-row {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 4px;
         padding: 2px 0 2px 40px;
@@ -166,6 +211,7 @@
       }
       .scale-row canvas.hist {
         width: 200px;
+        max-width: 100%;
         height: 36px;
         border: 1px solid #555;
         cursor: ew-resize;
@@ -174,6 +220,7 @@
       .scale-row .hist-legend {
         display: inline-block;
         width: 200px;
+        max-width: 100%;
         height: 8px;
         border: 1px solid #666;
       }
@@ -190,12 +237,12 @@
         padding: 2px;
         margin: 0;
       }
-      .scale-row select {
+      #controls .scale-row select {
         font-size: 10px;
         padding: 1px;
         max-width: 110px;
       }
-      .scale-row button {
+      #controls .scale-row button {
         font-size: 10px;
         padding: 1px 4px;
       }
@@ -204,28 +251,81 @@
         font-size: 9px;
         padding-left: 40px;
       }
-      .hint {
-        color: #aaa;
-        font-size: 10px;
-      }
       .crs-string {
         display: inline-block;
-        max-width: 380px;
+        max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: bottom;
       }
       #info {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #444;
+        font-size: 11px;
+        color: #ccc;
         user-select: text;
+        overflow-wrap: anywhere;
       }
-      fieldset {
-        border: 1px solid #444;
-        padding: 6px;
-        margin: 6px 0;
+
+      /* Phones and narrow windows: a sheet along the bottom, so the map
+         keeps the top of the screen and the panel is a thumb away. */
+      @media (max-width: 640px) {
+        #controls {
+          top: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          width: auto;
+          max-width: none;
+          max-height: 55%;
+          border-radius: 10px 10px 0 0;
+          padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+        }
+        .alpha-row, .scale-row, .attribution {
+          padding-left: 12px;
+        }
       }
-      legend {
-        padding: 0 4px;
+
+      /* Fingers: inputs at 16px so iOS does not zoom the page on focus,
+         and buttons big enough to hit. */
+      @media (pointer: coarse) {
+        #controls input, #controls select, #controls button, .file-btn {
+          font-size: 16px;
+        }
+        #controls button, .file-btn {
+          min-height: 34px;
+          padding: 4px 10px;
+        }
+        #controls .title-row .links button {
+          font-size: 14px;
+          min-height: 32px;
+          padding: 2px 10px;
+        }
+        #controls .layer-item button, #controls .scale-row button {
+          font-size: 14px;
+          min-height: 30px;
+          padding: 2px 8px;
+        }
+        #controls .scale-row input.num, #controls .scale-row select {
+          font-size: 16px;
+          width: 5em;
+        }
+        input[type="checkbox"] {
+          width: 20px;
+          height: 20px;
+        }
+        .alpha-row input[type="range"] {
+          width: 160px;
+        }
+        .hint, #vertex-count, .layer-item, .alpha-row, .scale-row {
+          font-size: 12px;
+        }
+        .hint .mouse { display: none; }
+      }
+      @media (pointer: fine) {
+        .hint .touch { display: none; }
       }
     </style>
   </head>
@@ -237,49 +337,59 @@
         <span class="links">
           <button id="link-btn" title="Put a link to this view, layers and all, in the address bar and on the clipboard">link</button>
           <button id="reset-btn" title="Start again with the defaults">reset</button>
-          <button id="panel-toggle" title="Collapse/expand panel">_</button>
+          <button id="panel-toggle" title="Hide or show the controls" aria-expanded="true">hide</button>
         </span>
       </div>
-      
+
       <fieldset>
         <legend>Display</legend>
         <div class="control-row">
-          <label>Mode:</label>
-          <select id="mode">
-            <option value="fixed">fixed extent</option>
+          <label for="mode">Mode:</label>
+          <select id="mode" title="centred: the projection follows the view, drag to spin; fixed: a static CRS with a camera over it">
             <option value="centred">centred projection</option>
+            <option value="fixed">fixed extent</option>
           </select>
         </div>
-        <div id="fixed-panel">
+        <div id="fixed-panel" hidden>
           <div class="control-row">
-            <label>CRS:</label>
-            <input type="text" id="display-crs" class="crs" value="EPSG:3857" />
+            <label for="display-crs">CRS:</label>
+            <input type="text" id="display-crs" class="grow" value="EPSG:3857"
+                   autocapitalize="off" autocorrect="off" spellcheck="false" />
           </div>
           <div class="control-row">
-            <label>Extent:</label>
-            <input type="text" id="extent" class="extent" value="-40000000,40000000,-40000000,40000000" />
+            <label for="extent">Extent:</label>
+            <input type="text" id="extent" class="grow" value="-20037508,20037508,-20037508,20037508"
+                   title="xmin,xmax,ymin,ymax in display units"
+                   autocapitalize="off" autocorrect="off" spellcheck="false" />
           </div>
         </div>
-        <div id="centred-panel" hidden>
+        <div id="centred-panel">
           <div class="control-row">
-            <label>Proj:</label>
-            <select id="proj"></select>
+            <label for="proj">Proj:</label>
+            <select id="proj" class="grow"></select>
           </div>
-          <div class="control-row">
-            <label></label>
-            <input type="text" id="proj-template" class="extent" hidden
+          <div class="control-row" id="proj-template-row" hidden>
+            <label for="proj-template">Template:</label>
+            <input type="text" id="proj-template" class="grow"
+                   autocapitalize="off" autocorrect="off" spellcheck="false"
                    placeholder="+proj=... +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m" />
           </div>
           <div class="control-row">
-            <label>Centre:</label>
-            <input type="text" id="centre-lon" class="small" value="0" title="longitude" />
-            <input type="text" id="centre-lat" class="small" value="-90" title="latitude" />
-            <span class="hint">lon, lat (drag the map to move it; shift-drag looks around without re-centring)</span>
+            <label for="centre-lon">Centre:</label>
+            <input type="text" id="centre-lon" class="small" value="135" title="longitude" inputmode="decimal" />
+            <input type="text" id="centre-lat" class="small" value="-35" title="latitude" inputmode="decimal" />
+            <span class="hint">lon, lat</span>
+          </div>
+          <div class="control-row">
+            <span class="hint indent">
+              <span class="mouse">Drag to move the centre, wheel or double-click to zoom; shift-drag looks around without re-centring.</span>
+              <span class="touch">Drag to move the centre, pinch or double-tap to zoom.</span>
+            </span>
           </div>
           <div class="control-row">
             <label for="recentre">Re-centre:</label>
-            <select id="recentre" title="when a drag moves the projection centre">
-              <option value="auto">auto (live on proj4js, on release on PROJ)</option>
+            <select id="recentre" title="When a drag moves the projection centre. auto: live under proj4js, on release under PROJ (a round trip per frame)">
+              <option value="auto" title="live under proj4js, on release under PROJ">auto</option>
               <option value="live">live, while dragging</option>
               <option value="release">on release</option>
             </select>
@@ -291,70 +401,75 @@
             <option value="mesh">mesh (GPU interpolation)</option>
             <option value="warp">warp (rwarp resampling)</option>
           </select>
+        </div>
+        <div class="control-row" id="warp-row" hidden>
+          <label for="warp-alg">Resample:</label>
           <select id="warp-alg" title="resampling kernel for the warp engine">
             <option value="nearest">nearest</option>
             <option value="bilinear" selected>bilinear</option>
             <option value="cubic">cubic</option>
             <option value="lanczos">lanczos</option>
           </select>
-          <input type="number" id="warp-scale" class="small" value="1" min="0.1" max="2" step="0.1" title="warp pixels per screen pixel; 0.5 is four times faster" />
+          <input type="number" id="warp-scale" class="small" value="1" min="0.1" max="2" step="0.1" inputmode="decimal"
+                 title="warp pixels per screen pixel; 0.5 is four times faster" />
+          <span class="hint">px per screen px</span>
         </div>
         <div class="control-row">
-          <label>Grid:</label>
-          <input type="number" id="grid-size" class="small" value="64" min="4" max="256" />
+          <label for="grid-size">Grid:</label>
+          <input type="number" id="grid-size" class="small" value="64" min="4" max="256" inputmode="numeric" />
           <span id="vertex-count">(4225 verts)</span>
-          <button id="apply-crs-btn">Apply</button>
+          <button id="apply-crs-btn" title="Apply the CRS, extent, template, centre and grid typed above (Enter in a box does the same)">Apply</button>
         </div>
-        <div class="control-row">
-          <label></label>
-          <input type="checkbox" id="graticule" checked />
-          <label for="graticule" class="wide">graticule</label>
-          <input type="checkbox" id="wireframe" />
-          <label for="wireframe" class="wide">show triangles</label>
-          <input type="checkbox" id="wrap" />
-          <label for="wrap" class="wide" title="repeat the world sideways, where the projection has a repeat">wrap</label>
+        <div class="control-row checks">
+          <label class="indent"><input type="checkbox" id="graticule" checked /> graticule</label>
+          <label><input type="checkbox" id="wireframe" /> triangles</label>
+          <label title="repeat the world sideways, where the projection has a repeat"><input type="checkbox" id="wrap" /> wrap</label>
         </div>
       </fieldset>
 
       <fieldset>
         <legend>Layers</legend>
-        <input type="text" id="cog-url" placeholder="COG URL, {z}/{x}/{y} template, or WMTS GetCapabilities URL" />
-        <button id="load-btn">Load</button>
-        <button id="add-btn">Add</button>
-        <label for="cog-file" class="file-btn" title="Open GeoTIFFs from this computer (or drop them on the map). Read in place, nothing is uploaded.">file...</label>
-        <!-- No accept: on phones an image MIME type turns the picker into the Photos
-             picker, which cannot see a TIFF in Files, and extension filters are not
-             honoured. Anything can be chosen; the viewer tries to open it and says if it cannot. -->
-        <input type="file" id="cog-file" multiple hidden />
+        <div class="url-row">
+          <input type="text" id="cog-url" placeholder="COG URL, {z}/{x}/{y} template, or WMTS capabilities"
+                 inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
         <div class="control-row">
-          <label>Preset:</label>
-          <select id="tile-preset"><option value="">presets...</option></select>
+          <button id="load-btn" title="Replace the layers with this one">Load</button>
+          <button id="add-btn" title="Add this on top of the layers">Add</button>
+          <label for="cog-file" class="file-btn" title="Open GeoTIFFs from this device (or drop them on the map). Read in place, nothing is uploaded.">open file</label>
+          <!-- No accept: on phones an image MIME type turns the picker into the Photos
+               picker, which cannot see a TIFF in Files, and extension filters are not
+               honoured. Anything can be chosen; the viewer tries to open it and says if it cannot. -->
+          <input type="file" id="cog-file" multiple hidden />
+        </div>
+        <div class="control-row">
+          <label for="tile-preset">Preset:</label>
+          <select id="tile-preset" class="grow"><option value="">choose a preset...</option></select>
         </div>
         <div id="wmts-picker" hidden>
           <div class="control-row">
-            <label>Layer:</label>
+            <label for="wmts-filter">Layer:</label>
             <input type="text" id="wmts-filter" class="small" placeholder="filter" />
-            <select id="wmts-layer"></select>
+            <select id="wmts-layer" class="grow"></select>
           </div>
           <div class="control-row">
-            <label>Matrix:</label>
-            <select id="wmts-tms"></select>
+            <label for="wmts-tms">Matrix:</label>
+            <select id="wmts-tms" class="grow"></select>
           </div>
           <div class="control-row" id="wmts-time-row" hidden>
-            <label>Time:</label>
-            <input type="text" id="wmts-time" class="crs" />
+            <label for="wmts-time">Time:</label>
+            <input type="text" id="wmts-time" class="small" />
             <span class="hint" id="wmts-time-hint"></span>
           </div>
           <div class="control-row">
-            <label></label>
-            <button id="wmts-load-btn">Load</button>
+            <button id="wmts-load-btn" class="indent">Load</button>
             <button id="wmts-add-btn">Add</button>
             <span class="hint" id="wmts-count"></span>
           </div>
         </div>
         <div id="layers"></div>
       </fieldset>
-      
+
       <div id="info"></div>
     </div>
     <div id="app"></div>

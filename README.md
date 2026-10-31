@@ -192,7 +192,7 @@ make a purple-and-teal map. A paletted TIFF (a ColorMap, with or without
 
 ### Local files
 
-**file...** next to the URL box (or drop `.tif` files on the map) opens
+**open file** next to the URL box (or drop `.tif` files on the map) opens
 GeoTIFFs from your own disk. geotiff.js reads a `File` with the same range
 semantics it uses over HTTP, so a COG on disk is tiled and overview reads
 out of the file, never a whole-file load, and nothing is uploaded anywhere.
@@ -465,12 +465,14 @@ A global lon/lat source has two failure modes for UV interpolation: a
 triangle straddling the antimeridian (u ~ 0 on one side, u ~ 1 on the other,
 so the GPU sweeps the whole texture across it) and a triangle containing a
 pole (its vertices span every longitude). Each layer therefore gets its own
-de-indexed mesh, u is unwrapped per triangle when the source spans 360
-degrees (with REPEAT wrapping in the sampler), and the few triangles whose
-span is still over half the texture, the ones containing a pole, are dropped.
-That leaves a hole about one mesh cell across at each pole; a finer grid
-shrinks it. Tick "show triangles" (or add `wire=1`) to see the mesh, the
-dropped pole triangles, and the rim where vertices fail the validity test.
+de-indexed mesh, and u is unwrapped per triangle when the source spans 360
+degrees (with REPEAT wrapping in the sampler). A triangle whose span is still
+over half the texture contains a pole: it is split at the pole's projected
+position into three, one per edge, each spanning only the longitudes along
+its edge, with the pole corner at the middle of those (u is arbitrary at the
+pole itself, so this is exact). There is no hole at the pole. Tick
+"triangles" (or add `wire=1`) to see the mesh, the pole fans and the clipped
+rim.
 
 ### Graticule
 
@@ -485,9 +487,17 @@ on its line is a projection cut and is not drawn.
 A display vertex is only used if display -> lon/lat -> display round-trips to
 where it started. That one projection-agnostic test drops vertices beyond the
 horizon of an orthographic view, past the Mercator poles, at the antipode of an
-aeqd, and anywhere the transform returns NaN. Triangles touching an invalid
-vertex are removed from the index buffer, and the layer list shows the
-percentage of vertices that survived.
+aeqd, and anywhere the transform returns NaN. The layer list shows the
+percentage of vertices that pass.
+
+Dropping every triangle that touches an invalid vertex would leave the map a
+staircase outline one mesh cell deep. Instead every edge with one valid and
+one invalid end is bisected (10 steps, a thousandth of a cell) to where
+validity actually ends, and the partial triangles are clipped there: a corner
+cut off makes a triangle, two cut off a quad. The two triangles on either side
+of an edge share its boundary point, so the clip leaves no cracks, and the
+limb of a globe or the edge of a lobe is smooth at any grid size. It costs
+ten more batched transforms of the rim edges, a few hundred points.
 
 ## URL parameters
 
@@ -529,7 +539,10 @@ to what you are looking at.
 - proj4 coordinate transforms
 - Mesh generation with inverse-projection UV computation and validity mask
 - WebGL2 textured mesh rendering (smooth interpolation!)
-- Custom pan/zoom controller (touch + mouse)
+- Custom pan/zoom controller on pointer events: drag, wheel/trackpad and
+  double-click on a desktop; one-finger drag, pinch (zoom about the fingers
+  and pan with them) and double-tap on a phone
+- Narrow screens get the panel as a bottom sheet, folded away at start
 - Zoom-dependent overview selection
 - Multiple layers
 - Fixed and centred view modes, shareable URLs
