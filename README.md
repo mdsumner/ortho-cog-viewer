@@ -99,6 +99,16 @@ reports where you are) over a CRS that does not move, which is usually what
 you want for a projected grid like an MGA zone. Note that proj4js does not default `x_0`/`y_0` and silently returns
 NaN without them, so spell out `+x_0=0 +y_0=0`.
 
+In the Mode list these show as two modes, **dynamic** (the template has
+placeholders, the projection follows the drag) and **centred** (a fixed CRS,
+the view moves over it). Switching a fixed CRS to dynamic templates it in
+place: `lon_0`/`lat_0` (`lonc` for omerc) become the view centre, the false
+origin goes to zero, a UTM zone becomes its transverse Mercator, and the
+rest (standard parallels, `lat_ts`, the ellipsoid) is kept, so EPSG:3577
+becomes an Albers with its own parallels that re-centres as you drag.
+Switching back to centred freezes the projection where it is. Both work
+from fixed mode too, starting at the view centre.
+
 ### Sources: COGs and tile pyramids are the same thing
 
 A layer only needs four things from its source: a CRS, a full extent, a list

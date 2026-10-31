@@ -18,7 +18,7 @@
  */
 
 import { generateGridMesh, GridMesh } from './engine/mesh';
-import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider, executorFor } from './core/crs';
+import { registerProjections, ensureCRS, resolveCRS, unknownCRSMessage, setDefinitionProvider, executorFor, crsDefinition } from './core/crs';
 import { projWasmProvider } from './core/projwasm';
 import { RasterSource, parseFragment, formatFragment } from './core/source';
 import { COGSource, splitCogUrl, registerLocalFile, isLocalUrl } from './core/cogSource';
@@ -31,7 +31,7 @@ import { geoTransform } from './core/transform';
 import { transformBounds, boundsToDisplayAsync, SourceBounds } from './core/bounds';
 import { WrapSpec, detectWrap, detectWrapAsync, copyIndex } from './core/wrap';
 import { ViewController, ViewState } from './ViewController';
-import { CENTRED_PRESETS, centredCRS, isPresetName, panCentre, panCentreAsync, resolveTemplate, normaliseLonLat } from './core/centred';
+import { CENTRED_PRESETS, centredCRS, hasPlaceholders, isPresetName, templateFromDefinition, panCentre, panCentreAsync, resolveTemplate, normaliseLonLat } from './core/centred';
 import { LayerEngine, RenderContext, Style, View, Curve, defaultStyle } from './engine/types';
 import { MeshEngine } from './engine/meshEngine';
 import { WarpEngine, WarpOptions } from './engine/warpEngine';
@@ -604,7 +604,9 @@ function readGridSize(): number | null {
 }
 
 async function applyDisplaySettings(zoomOverride?: number): Promise<void> {
-  const newMode = modeSelect.value as Mode;
+  // 'centred' and 'dynamic' are one mode underneath: which one it is
+  // depends only on whether the template has placeholders.
+  const newMode: Mode = modeSelect.value === 'fixed' ? 'fixed' : 'centred';
   const newGrid = readGridSize();
   if (newGrid === null) return;
 
@@ -670,6 +672,46 @@ async function applyDisplaySettings(zoomOverride?: number): Promise<void> {
     // and UVs via handleViewChange on the next frame.
   }
   syncUI();
+}
+
+/**
+ * To centred or dynamic mode from wherever the view is, keeping the CRS.
+ * Dynamic turns the current CRS into a template (its lon_0/lat_0 become the
+ * view centre, everything else stays as it was), so the projection follows
+ * the drag; centred freezes the current projection where it is and moves
+ * the view over it. Either way the first frame is the map as it was.
+ */
+async function switchCentred(dynamic: boolean): Promise<void> {
+  const state = viewController.getState();
+  let crs: string;
+  let lon = centreLon, lat = centreLat;
+  if (mode === 'fixed') {
+    crs = displayCRS;
+    const geo = geoTransform(displayCRS);
+    const ll = geo.toGeoSync
+      ? geo.toGeoSync(new Float64Array([state.centerX, state.centerY]))
+      : await geo.toGeo(new Float64Array([state.centerX, state.centerY]));
+    if (isFinite(ll[0]) && isFinite(ll[1])) [lon, lat] = [ll[0], ll[1]];
+  } else {
+    crs = currentDisplayCRS();
+  }
+  let template: string | null = crs;
+  if (dynamic) {
+    const def = crsDefinition(crs);
+    template = def ? templateFromDefinition(def) : null;
+    if (!template) {
+      alert(`Cannot make ${crs} follow the view: it has no proj string to put a centre in.`);
+      syncUI();
+      return;
+    }
+  }
+  projSelect.value = 'custom';
+  projTemplateInput.value = template;
+  projTemplateRow.hidden = false;
+  fixedPanel.hidden = true;
+  centredPanel.hidden = false;
+  [centreLonInput.value, centreLatInput.value] = [lon.toFixed(4), lat.toFixed(4)];
+  await applyDisplaySettings(state.zoom);
 }
 
 function defaultCentredZoom(): number {
@@ -1341,9 +1383,10 @@ function presetOption(name: string): HTMLOptionElement {
 }
 
 function syncUI(): void {
-  modeSelect.value = mode;
+  modeSelect.value = mode === 'fixed' ? 'fixed'
+    : hasPlaceholders(resolveTemplate(centredProj)) ? 'dynamic' : 'centred';
   fixedPanel.hidden = mode !== 'fixed';
-  centredPanel.hidden = mode !== 'centred';
+  centredPanel.hidden = mode === 'fixed';
   gridSizeInput.value = String(gridSize);
   wireframeInput.checked = showWireframe;
   wrapInput.checked = wrapWorld;
@@ -1710,9 +1753,13 @@ async function main() {
   // A choice from a list takes effect at once; typed values wait for Enter
   // or Apply, so a half-typed CRS is never tried.
   modeSelect.addEventListener('change', () => {
-    fixedPanel.hidden = modeSelect.value !== 'fixed';
-    centredPanel.hidden = modeSelect.value !== 'centred';
-    void applyDisplaySettings();
+    if (modeSelect.value === 'fixed') {
+      fixedPanel.hidden = false;
+      centredPanel.hidden = true;
+      void applyDisplaySettings();
+    } else {
+      void switchCentred(modeSelect.value === 'dynamic');
+    }
   });
   projSelect.addEventListener('change', () => {
     projTemplateRow.hidden = projSelect.value !== 'custom';
