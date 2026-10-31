@@ -23,7 +23,7 @@ import { projWasmProvider } from './core/projwasm';
 import { RasterSource, parseFragment, formatFragment } from './core/source';
 import { COGSource, splitCogUrl, registerLocalFile, isLocalUrl } from './core/cogSource';
 import { COLORMAPS, colormapCss, colormapRange, isColormapName } from './core/colormap';
-import { XYZSource, TILE_PRESETS, isTileTemplate } from './core/xyzSource';
+import { XYZSource, TILE_PRESETS, isTileTemplate, presetName } from './core/xyzSource';
 import { isCapabilitiesUrl, fetchCapabilities, splitCapabilitiesUrl, ParsedCapabilities, WMTSLayerInfo } from './core/wmts';
 import { LineRenderer } from './engine/LineRenderer';
 import { buildGraticule, buildGraticuleAsync } from './core/graticule';
@@ -46,7 +46,7 @@ type Mode = 'fixed' | 'centred';
 
 const DEFAULT_EXTENT = Math.PI * 6378137;  // half the Web Mercator world, ~20M metres
 const MAX_VERTICES = 66000;  // ~256x256 grid max
-const DEFAULT_COG = 'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif';
+const DEFAULT_LAYER = 'preset:esri-imagery';
 
 // ---------------------------------------------------------------------------
 // Display state
@@ -757,7 +757,7 @@ function fitLayer(layer: Layer): void {
 
 async function openSource(url: string): Promise<RasterSource> {
   if (url.startsWith('preset:')) {
-    const p = TILE_PRESETS[url.slice(7)];
+    const p = TILE_PRESETS[presetName(url.slice(7))];
     if (p && p.cog) return COGSource.open(p.template);
     return XYZSource.fromPreset(url.slice(7));
   }
@@ -1920,7 +1920,7 @@ async function main() {
 
   // Load layers from URL params, or the default
   const urls = params.getAll('url');
-  if (urls.length === 0) urls.push(DEFAULT_COG);
+  if (urls.length === 0) urls.push(DEFAULT_LAYER);
   // Leave the box empty for the default layer, so its placeholder says
   // what can go there; a layer from the URL is shown so it can be edited.
   if (params.getAll('url').length) urlInput.value = urls[0];

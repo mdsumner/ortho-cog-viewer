@@ -55,17 +55,27 @@ export interface TilePreset {
   cog?: boolean;
 }
 
+/** Old preset names, so links made with them still open (as the newer data). */
+export const PRESET_ALIASES: Record<string, string> = {
+  'gebco-2024': 'gebco-2026',
+  'gebco-2024-dirt': 'gebco-2026-dirt'
+};
+
+export function presetName(name: string): string {
+  return PRESET_ALIASES[name] ?? name;
+}
+
 export const TILE_PRESETS: Record<string, TilePreset> = {
-  'gebco-2024': {
-    label: 'GEBCO 2024 bathymetry, hillshaded (COG, source.coop)',
-    template: 'https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif#cmap=bathy&curve=sqrt&shade=0.7&zf=8',
-    attribution: 'GEBCO Compilation Group (2024); COG by Alex Leith on source.coop',
+  'gebco-2026': {
+    label: 'GEBCO 2026 bathymetry, hillshaded (COG, source.coop)',
+    template: 'https://data.source.coop/ausantarctic/gebco/GEBCO_2026.tif#cmap=bathy&curve=sqrt&shade=0.7&zf=8',
+    attribution: 'GEBCO Compilation Group (2026); COG on source.coop',
     cog: true
   },
-  'gebco-2024-dirt': {
-    label: 'GEBCO 2024 with the DiRT palette (COG, source.coop)',
-    template: 'https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif#cmap=dirt&shade=0.6&zf=8',
-    attribution: 'GEBCO Compilation Group (2024); COG by Alex Leith on source.coop',
+  'gebco-2026-dirt': {
+    label: 'GEBCO 2026 with the DiRT palette (COG, source.coop)',
+    template: 'https://data.source.coop/ausantarctic/gebco/GEBCO_2026.tif#cmap=dirt&shade=0.6&zf=8',
+    attribution: 'GEBCO Compilation Group (2026); COG on source.coop',
     cog: true
   },
   'ibcso-chart': {
@@ -250,7 +260,7 @@ export class XYZSource implements RasterSource {
   }
 
   static async fromPreset(name: string): Promise<XYZSource> {
-    const p = TILE_PRESETS[name];
+    const p = TILE_PRESETS[presetName(name)];
     if (!p) throw new Error(`Unknown tile preset ${name}`);
     if (!p.scheme) return XYZSource.fromCapabilities(p.template, undefined, undefined, p.label, p.attribution);
     return new XYZSource(p.template, SCHEMES[p.scheme](p.maxLevel), p.label, p.attribution);
