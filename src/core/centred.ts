@@ -179,6 +179,48 @@ export function hasPlaceholders(template: string): boolean {
   return /\{lon_0\}|\{lat_0\}/.test(template);
 }
 
+/**
+ * Projections whose centre has a latitude: the azimuthals, the conics, the
+ * transverse cylindricals, Spilhaus. A template for one of these gets a
+ * {lat_0} placeholder even when the definition leaves lat_0 to its default.
+ * The rest (the world projections) re-centre only their meridian.
+ */
+const CENTRED_ON_A_POINT = new Set([
+  'ortho', 'laea', 'aeqd', 'stere', 'sterea', 'gnom', 'nsper', 'tpers',
+  'tmerc', 'etmerc', 'aea', 'lcc', 'eqdc', 'leac', 'omerc', 'spilhaus',
+  'bonne', 'poly', 'cass', 'geos', 'vertical_perspective'
+]);
+
+/**
+ * Turn a fixed CRS into a re-centring template, keeping its other settings:
+ * lon_0 and lat_0 become placeholders (lonc for omerc), the false origin
+ * goes to zero (the centred mesh is built around the projected centre), and
+ * a UTM zone becomes the transverse Mercator it is. The standard parallels
+ * of a conic, a polar stereographic's lat_ts, an ellipsoid and so on stay as
+ * they were, so the first frame is that CRS, moved to the view centre.
+ * Null for a definition that is not a proj string.
+ */
+export function templateFromDefinition(def: string): string | null {
+  let d = ` ${def.trim()} `;
+  const proj = /\s\+proj=([^\s]+)/.exec(d)?.[1];
+  if (!proj) return null;
+  if (proj === 'utm') {
+    const zone = parseInt(/\s\+zone=(\d+)/.exec(d)?.[1] || '');
+    if (!isFinite(zone)) return null;
+    d = d.replace(/\s\+proj=utm/, ' +proj=tmerc')
+      .replace(/\s\+zone=\d+/, ` +lon_0=${zone * 6 - 183} +lat_0=0 +k_0=0.9996`)
+      .replace(/\s\+south(=[^\s]*)?/, '');
+  }
+  d = d.replace(/\s\+[xy]_0=[^\s]*/g, '');
+  d = d.replace(/\s\+type=crs/g, '');
+  const lonKey = proj === 'omerc' ? 'lonc' : 'lon_0';
+  const lonRe = new RegExp(`\\s\\+${lonKey}=[^\\s]*`);
+  d = lonRe.test(d) ? d.replace(lonRe, ` +${lonKey}={lon_0}`) : d + ` +${lonKey}={lon_0}`;
+  if (/\s\+lat_0=/.test(d)) d = d.replace(/\s\+lat_0=[^\s]*/, ' +lat_0={lat_0}');
+  else if (CENTRED_ON_A_POINT.has(proj)) d += ' +lat_0={lat_0}';
+  return (d + ' +x_0=0 +y_0=0').replace(/\s+/g, ' ').trim();
+}
+
 export function isPresetName(s: string): boolean {
   return Object.prototype.hasOwnProperty.call(CENTRED_PRESETS, s);
 }

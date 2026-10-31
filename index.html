@@ -345,8 +345,9 @@
         <legend>Display</legend>
         <div class="control-row">
           <label for="mode">Mode:</label>
-          <select id="mode" title="centred: the projection follows the view, drag to spin; fixed: a static CRS with a camera over it">
-            <option value="centred">centred projection</option>
+          <select id="mode" title="dynamic: the projection re-centres on the view as you drag; centred: the CRS stays put and the view moves over it; fixed: a static extent with a camera over it">
+            <option value="dynamic">dynamic: projection follows the drag</option>
+            <option value="centred">centred: view moves over the CRS</option>
             <option value="fixed">fixed extent</option>
           </select>
         </div>
