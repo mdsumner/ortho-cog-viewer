@@ -7,8 +7,9 @@ CRS-agnostic Cloud Optimized GeoTIFF viewer with GPU-accelerated reprojection.
 ## Examples
 
 All state lives in the URL, so these are links to specific scenes. The default
-layer is NASA's Blue Marble (January, EPSG:4326, 5400x2700) and the default
-view is an orthographic globe centred over Australia.
+layer is Esri World Imagery (XYZ tiles in Web Mercator, reprojected like any
+other source) and the default view is an orthographic globe centred over
+Australia.
 
 `S2` below is a Sentinel-2 true-colour COG over Tasmania (tile 55GEN, UTM 55S):
 `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif`
@@ -20,8 +21,8 @@ Centred projection mode (the projection centre follows the screen centre, drag t
 - [Azimuthal equidistant from Hobart (great circles from the centre are straight, the antipode is the rim)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=aeqd&center=147.3,-42.9&zoom=-16)
 - [Lambert azimuthal equal area centred on Casey](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=110.5,-66.3&zoom=-13)
 - [Gnomonic over the Ross Sea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=gnom&center=180,-75&zoom=-13)
-- [S2 Tasmania tile on the globe, Blue Marble underneath](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
-- [Goode homolosine, interrupted, rotating under the cursor](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=igh&center=147,-20&zoom=-16&graticule=1&url=preset:gebco-2024)
+- [S2 Tasmania tile on the globe, NASA Blue Marble underneath](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/january/world.200401.3x5400x2700_geo.tif&url=https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/55/G/EN/2024/12/S2A_55GEN_20241204_0_L2A/TCI.tif)
+- [Goode homolosine, interrupted, rotating under the cursor](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=igh&center=147,-20&zoom=-16&graticule=1&url=preset:gebco-2026)
 
 Fixed extent mode (a static display CRS with a camera over it, the original design):
 
@@ -36,9 +37,9 @@ pasting a `{z}/{x}/{y}` template into the URL box:
 - [OpenStreetMap in Antarctic Polar Stereographic](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:3031&extent=-6000000,6000000,-6000000,6000000&url=preset:osm)
 - [NASA GIBS sea ice concentration (EPSG:3857 tiles) on a south polar laea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=0,-90&zoom=-12.5&url=preset:gibs-bluemarble-3857&url=preset:gibs-seaice-3857)
 - [GIBS MODIS true colour (EPSG:4326 tiles) from Hobart, aeqd](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=aeqd&center=147.3,-42.9&zoom=-13&url=preset:gibs-modis-truecolor)
-- [GEBCO 2024 bathymetry, hillshaded, orthographic over Tasmania (COG on source.coop)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=preset:gebco-2024)
+- [GEBCO 2026 bathymetry, hillshaded, orthographic over Tasmania (COG on source.coop)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&zoom=-10&url=preset:gebco-2026)
 - [The IBCSO v2 printed chart as a COG, on its own polar stereographic (EPSG:9354)](https://mdsumner.github.io/ortho-cog-viewer/?mode=fixed&crs=EPSG:9354&extent=-4833000,4837000,-6629000,4797000&url=preset:ibcso-chart)
-- [GEBCO 2024 with the DiRT palette, south polar laea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=0,-90&zoom=-13&url=preset:gebco-2024-dirt)
+- [GEBCO 2026 with the DiRT palette, south polar laea](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=0,-90&zoom=-13&url=preset:gebco-2026-dirt)
 - [GHRSST MUR SST 2026-08-29 in degrees C (int16 COG with scale/offset)](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=ortho&center=147,-42&url=preset:mur-sst-20260829)
 - [LIST Tasmania 2026 aerial photo, from its WMTS GetCapabilities, on a laea centred on Hobart](https://mdsumner.github.io/ortho-cog-viewer/?mode=centred&proj=laea&center=147.33,-42.88&zoom=-6&url=preset:list-aerial-2026)
 
