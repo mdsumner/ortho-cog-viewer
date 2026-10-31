@@ -24,6 +24,15 @@ import { geoTransform } from './transform';
 export interface CentredPreset {
   label: string;
   template: string;
+  /**
+   * Kept for links and the URL (`proj=igh`) but not offered in the list,
+   * which shows the everyday CRSs, the ones a web map gets wrong.
+   */
+  hidden?: boolean;
+  /** Where to look when this is picked from the list: lon, lat. */
+  centre?: [number, number];
+  /** Width in display metres to fit to the screen when picked from the list. */
+  span?: number;
 }
 
 /**
@@ -36,26 +45,81 @@ export interface CentredPreset {
  */
 export const CENTRED_PRESETS: Record<string, CentredPreset> = {
   ortho: {
-    label: 'Orthographic (globe)',
+    label: 'Orthographic globe, drag to spin',
     template: '+proj=ortho +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
+  aeqd: {
+    label: 'Azimuthal equidistant, drag to spin',
+    template: '+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  igh: {
+    label: 'World: Goode homolosine (interrupted)',
+    template: '+proj=igh +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
+  },
+  // Everyday CRSs, fixed (no placeholders): the projection stays put and the
+  // view moves over it. Each has a pole, the antimeridian or a long way
+  // from Web Mercator in view, which is where a tile-based web map fails.
+  'laea-south': {
+    label: 'South polar Lambert azimuthal equal area',
+    template: '+proj=laea +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs',
+    centre: [0, -90], span: 12e6
+  },
+  'laea-north': {
+    label: 'North polar Lambert azimuthal equal area',
+    template: '+proj=laea +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs',
+    centre: [0, 90], span: 12e6
+  },
+  'EPSG:3031': {
+    label: 'Antarctic polar stereographic',
+    template: 'EPSG:3031',
+    centre: [0, -90], span: 9e6
+  },
+  'EPSG:3413': {
+    label: 'NSIDC Arctic polar stereographic',
+    template: 'EPSG:3413',
+    centre: [0, 90], span: 9e6
+  },
+  'EPSG:5070': {
+    label: 'CONUS Albers equal area',
+    template: 'EPSG:5070',
+    centre: [-96, 38], span: 5.5e6
+  },
+  'EPSG:3577': {
+    label: 'Australian Albers equal area',
+    template: 'EPSG:3577',
+    centre: [134, -28], span: 5e6
+  },
+  'EPSG:32760': {
+    label: 'UTM zone 60 south, across the antimeridian',
+    template: 'EPSG:32760',
+    centre: [177, -40], span: 2e6
+  },
+  spilhaus: {
+    // PROJ only (in wasm, already loaded for codes proj4js lacks): the
+    // world's ocean as one piece, cut through the continents.
+    label: 'Spilhaus world ocean (PROJ)',
+    template: '+proj=spilhaus +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs',
+    centre: [66.94970198, -49.56371678], span: 2.5e7
+  },
+  // Re-centring templates and world projections: they work by name in a
+  // link, they are just not in the list.
   laea: {
+    hidden: true,
     label: 'Lambert azimuthal equal area',
     template: '+proj=laea +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
-  aeqd: {
-    label: 'Azimuthal equidistant',
-    template: '+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
-  },
   stere: {
+    hidden: true,
     label: 'Oblique stereographic',
     template: '+proj=stere +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   gnom: {
+    hidden: true,
     label: 'Gnomonic',
     template: '+proj=gnom +lon_0={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   omerc: {
+    hidden: true,
     label: 'Oblique Mercator (near north-up)',
     template: '+proj=omerc +alpha=1 +gamma=2 +lonc={lon_0} +lat_0={lat_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
@@ -63,42 +127,46 @@ export const CENTRED_PRESETS: Record<string, CentredPreset> = {
   // rotates the globe under a fixed net and panning north-south just moves
   // the view. The ones proj4js lacks are in projections.ts.
   sinu: {
+    hidden: true,
     label: 'World: sinusoidal',
     template: '+proj=sinu +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   moll: {
+    hidden: true,
     label: 'World: Mollweide',
     template: '+proj=moll +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   robin: {
+    hidden: true,
     label: 'World: Robinson',
     template: '+proj=robin +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   eqearth: {
+    hidden: true,
     label: 'World: Equal Earth',
     template: '+proj=eqearth +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   eck4: {
+    hidden: true,
     label: 'World: Eckert IV',
     template: '+proj=eck4 +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   natearth: {
+    hidden: true,
     label: 'World: Natural Earth',
     template: '+proj=natearth +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   hammer: {
+    hidden: true,
     label: 'World: Hammer',
     template: '+proj=hammer +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   },
   wintri: {
+    hidden: true,
     // lat_1 written out on purpose: see projections.ts on what PROJ's CRS
     // path does with a missing one.
     label: 'World: Winkel Tripel',
     template: '+proj=wintri +lat_1=50.46697 +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
-  },
-  igh: {
-    label: 'World: Goode homolosine (interrupted)',
-    template: '+proj=igh +lon_0={lon_0} +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
   }
 };
 

@@ -73,7 +73,13 @@ This gives some nice properties for free:
 - the cost is one proj4 round trip per mesh vertex per layer per frame, which
   is a few thousand transforms for the default 64-wide grid
 
-Presets are in `centred.ts`. A custom template can be given with `{lon_0}` and
+Presets are in `centred.ts`. The list keeps to the showcases (ortho, aeqd,
+Goode) and the everyday CRSs a tiled web map gets wrong: polar laea and
+stereographic (EPSG:3031, EPSG:3413) with the pole in view, CONUS and
+Australian Albers (EPSG:5070, EPSG:3577), UTM zone 60 south across the
+antimeridian (EPSG:32760), and Spilhaus through PROJ in wasm. Picking a fixed
+one from the list jumps to its region. The other presets still work by name
+in a link. A custom template can be given with `{lon_0}` and
 `{lat_0}` placeholders; anything with a centre parameter works, for example
 the `omerc` preset puts `{lon_0}` into `lonc`.
 
@@ -521,7 +527,7 @@ page with no parameters.
 | `recentre` | centred mode: `auto` (default), `live` or `release`, see above |
 | `crs`    | fixed mode: display CRS (EPSG code or proj4 string)                |
 | `extent` | fixed mode: mesh extent as `xmin,xmax,ymin,ymax`                   |
-| `proj`   | centred mode: preset name (`ortho`, `laea`, `aeqd`, `stere`, `gnom`, `omerc`, or a world one: `sinu`, `moll`, `robin`, `eqearth`, `eck4`, `natearth`, `hammer`, `wintri`, `igh`), a template, or a fixed CRS |
+| `proj`   | centred mode: preset name, a template, or a fixed CRS. The list offers `ortho`, `aeqd`, `igh`, `laea-south`, `laea-north`, `EPSG:3031`, `EPSG:3413`, `EPSG:5070`, `EPSG:3577`, `EPSG:32760` and `spilhaus`; `laea`, `stere`, `gnom`, `omerc` and the world ones (`sinu`, `moll`, `robin`, `eqearth`, `eck4`, `natearth`, `hammer`, `wintri`) still work by name |
 | `center` | centred mode: `lon,lat`; fixed mode: `x,y` in display units        |
 
 Any layer URL can carry `#alpha=0.6` for opacity and `#crs=<proj4>` to declare
