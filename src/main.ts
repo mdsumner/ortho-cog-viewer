@@ -603,7 +603,7 @@ function readGridSize(): number | null {
   return n;
 }
 
-async function applyDisplaySettings(): Promise<void> {
+async function applyDisplaySettings(zoomOverride?: number): Promise<void> {
   const newMode = modeSelect.value as Mode;
   const newGrid = readGridSize();
   if (newGrid === null) return;
@@ -664,7 +664,7 @@ async function applyDisplaySettings(): Promise<void> {
     [centreLon, centreLat] = normaliseLonLat(lon, lat);
     updateCentredOrigin();
 
-    const zoom = wasCentred ? viewController.getState().zoom : defaultCentredZoom();
+    const zoom = zoomOverride ?? (wasCentred ? viewController.getState().zoom : defaultCentredZoom());
     makeViewController({ centerX: 0, centerY: 0, zoom });
     // ViewController fires onChange on construction, which builds the mesh
     // and UVs via handleViewChange on the next frame.
@@ -1332,6 +1332,14 @@ function syncCentreInputs(): void {
 /**
  * Push the current state into the form controls.
  */
+function presetOption(name: string): HTMLOptionElement {
+  const p = CENTRED_PRESETS[name];
+  const opt = document.createElement('option');
+  opt.value = name;
+  opt.textContent = name.startsWith('EPSG:') ? `${p.label} (${name})` : p.label;
+  return opt;
+}
+
 function syncUI(): void {
   modeSelect.value = mode;
   fixedPanel.hidden = mode !== 'fixed';
@@ -1347,6 +1355,10 @@ function syncUI(): void {
   displayCrsInput.value = displayCRS;
   extentInput.value = [meshExtent.minX, meshExtent.maxX, meshExtent.minY, meshExtent.maxY].join(',');
   if (isPresetName(centredProj)) {
+    // A preset kept out of the list (from a link) joins it while in use.
+    if (!Array.from(projSelect.options).some(o => o.value === centredProj)) {
+      projSelect.insertBefore(presetOption(centredProj), projSelect.querySelector('option[value="custom"]'));
+    }
     projSelect.value = centredProj;
     projTemplateInput.value = CENTRED_PRESETS[centredProj].template;
   } else {
@@ -1537,11 +1549,8 @@ async function main() {
   const panelToggle = document.getElementById('panel-toggle')!;
 
   // Populate preset select
-  for (const [name, preset] of Object.entries(CENTRED_PRESETS)) {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = `${name} - ${preset.label}`;
-    projSelect.appendChild(opt);
+  for (const name of Object.keys(CENTRED_PRESETS)) {
+    if (!CENTRED_PRESETS[name].hidden) projSelect.appendChild(presetOption(name));
   }
   const custom = document.createElement('option');
   custom.value = 'custom';
@@ -1656,7 +1665,7 @@ async function main() {
   urlInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') loadBtn.click();
   });
-  applyBtn.addEventListener('click', applyDisplaySettings);
+  applyBtn.addEventListener('click', () => void applyDisplaySettings());
   graticuleInput.addEventListener('change', () => {
     showGraticule = graticuleInput.checked;
     graticuleCRS = '';
@@ -1708,8 +1717,16 @@ async function main() {
   projSelect.addEventListener('change', () => {
     projTemplateRow.hidden = projSelect.value !== 'custom';
     if (projSelect.value !== 'custom') {
-      projTemplateInput.value = CENTRED_PRESETS[projSelect.value].template;
-      void applyDisplaySettings();
+      const preset = CENTRED_PRESETS[projSelect.value];
+      projTemplateInput.value = preset.template;
+      // A fixed CRS opens on its own region, fitted to the screen.
+      let zoom: number | undefined;
+      if (preset.centre) {
+        centreLonInput.value = String(preset.centre[0]);
+        centreLatInput.value = String(preset.centre[1]);
+      }
+      if (preset.span) zoom = Math.log2(Math.min(canvas.clientWidth, canvas.clientHeight) / preset.span);
+      void applyDisplaySettings(zoom);
     } else {
       projTemplateInput.focus();
     }
