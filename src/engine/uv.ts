@@ -218,7 +218,12 @@ export function buildLayerGeometry(
   wrap: WrapSpec | null = null
 ): LayerGeometry {
   const masked = computeTextureCoordsMasked(positions, displayCRS, sourceCRS, sourceBounds, tolerance, wrap);
-  return assembleLayerGeometry(positions, indices, masked, wrapU);
+  const rim = rimEdges(positions, indices, masked);
+  for (let k = 0; k < RIM_STEPS && rim.count; k++) {
+    rimStep(rim, computeTextureCoordsMasked(rimMidpoints(rim), displayCRS, sourceCRS, sourceBounds, tolerance, wrap));
+  }
+  const poles = wrapU ? polesOf(geoTransform(displayCRS).fromGeoSync!(POLES_LL), sourceCRS, sourceBounds) : [];
+  return assembleLayerGeometry(positions, indices, masked, wrapU, rim, poles, wrap);
 }
 
 /** The same, with the display transforms run by any executor. */
@@ -233,50 +238,245 @@ export async function buildLayerGeometryAsync(
   wrap: WrapSpec | null = null
 ): Promise<LayerGeometry> {
   const masked = await computeTextureCoordsMaskedAsync(positions, geo, sourceCRS, sourceBounds, tolerance, wrap);
-  return assembleLayerGeometry(positions, indices, masked, wrapU);
+  const rim = rimEdges(positions, indices, masked);
+  for (let k = 0; k < RIM_STEPS && rim.count; k++) {
+    rimStep(rim, await computeTextureCoordsMaskedAsync(rimMidpoints(rim), geo, sourceCRS, sourceBounds, tolerance, wrap));
+  }
+  const poles = wrapU ? polesOf(await geo.fromGeo(POLES_LL), sourceCRS, sourceBounds) : [];
+  return assembleLayerGeometry(positions, indices, masked, wrapU, rim, poles, wrap);
+}
+
+// ---------------------------------------------------------------------------
+// The poles
+// ---------------------------------------------------------------------------
+
+const POLES_LL = new Float64Array([0, 90, 0, -90]);
+
+/** A pole where the display has it as a point: display xy, and its v. */
+interface Pole { x: number; y: number; v: number }
+
+function polesOf(xy: Float64Array, sourceCRS: string, sourceBounds: SourceBounds): Pole[] {
+  const out: Pole[] = [];
+  const toSource = proj4('EPSG:4326', sourceCRS);
+  for (let k = 0; k < 2; k++) {
+    const x = xy[k * 2], y = xy[k * 2 + 1];
+    if (!isFinite(x) || !isFinite(y)) continue;
+    let sy: number;
+    try { sy = toSource.forward([0, k === 0 ? 90 : -90])[1]; } catch { continue; }
+    if (!isFinite(sy)) continue;
+    out.push({ x, y, v: 1.0 - (sy - sourceBounds.minY) / (sourceBounds.maxY - sourceBounds.minY) });
+  }
+  return out;
+}
+
+/** Is (px, py) inside the triangle (allowing for either winding)? */
+function inTriangle(px: number, py: number, xs: number[], ys: number[]): boolean {
+  const d = (i: number, j: number) =>
+    (xs[j] - xs[i]) * (py - ys[i]) - (ys[j] - ys[i]) * (px - xs[i]);
+  const a = d(0, 1), b = d(1, 2), c = d(2, 0);
+  return (a >= 0 && b >= 0 && c >= 0) || (a <= 0 && b <= 0 && c <= 0);
+}
+
+// ---------------------------------------------------------------------------
+// The rim: where the valid region ends inside a mesh cell
+// ---------------------------------------------------------------------------
+
+/**
+ * Bisection steps along each edge that crosses the rim. Each step halves the
+ * distance to the true edge of the valid region, so 10 steps put it within a
+ * thousandth of a mesh cell, well under a pixel at any grid size.
+ */
+const RIM_STEPS = 10;
+
+/**
+ * Every mesh edge with one valid and one invalid end. Dropping the triangles
+ * on those edges gives the map a staircase outline one mesh cell deep (the
+ * limb of an orthographic globe, the rim of a lobe); instead each edge is
+ * bisected to where validity actually ends, and the partial triangles are
+ * clipped there. An edge is shared by the two triangles on either side of
+ * it and both use the same boundary point, so the clip leaves no cracks.
+ */
+interface Rim {
+  count: number;
+  /** edge key (lo * nVerts + hi of the vertex indices) -> rim slot */
+  slot: Map<number, number>;
+  nVerts: number;
+  /** last known valid point and first known invalid point, display xy */
+  inX: Float64Array; inY: Float64Array;
+  outX: Float64Array; outY: Float64Array;
+  /** uv at the valid point */
+  u: Float64Array; v: Float64Array;
+}
+
+function edgeKey(a: number, b: number, n: number): number {
+  return a < b ? a * n + b : b * n + a;
+}
+
+function rimEdges(positions: Float32Array, indices: Uint32Array, masked: MaskedTextureCoords): Rim {
+  const { valid, texCoords: uv } = masked;
+  const nVerts = positions.length / 3;
+  const slot = new Map<number, number>();
+  const pairs: number[] = [];
+  for (let t = 0; t < indices.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const a = indices[t + k], b = indices[t + (k + 1) % 3];
+      if (valid[a] === valid[b]) continue;
+      const key = edgeKey(a, b, nVerts);
+      if (slot.has(key)) continue;
+      slot.set(key, pairs.length / 2);
+      if (valid[a]) pairs.push(a, b); else pairs.push(b, a);
+    }
+  }
+  const count = pairs.length / 2;
+  const rim: Rim = {
+    count, slot, nVerts,
+    inX: new Float64Array(count), inY: new Float64Array(count),
+    outX: new Float64Array(count), outY: new Float64Array(count),
+    u: new Float64Array(count), v: new Float64Array(count)
+  };
+  for (let i = 0; i < count; i++) {
+    const a = pairs[i * 2], b = pairs[i * 2 + 1];
+    rim.inX[i] = positions[a * 3]; rim.inY[i] = positions[a * 3 + 1];
+    rim.outX[i] = positions[b * 3]; rim.outY[i] = positions[b * 3 + 1];
+    rim.u[i] = uv[a * 2]; rim.v[i] = uv[a * 2 + 1];
+  }
+  return rim;
+}
+
+function rimMidpoints(rim: Rim): Float32Array {
+  const out = new Float32Array(rim.count * 3);
+  for (let i = 0; i < rim.count; i++) {
+    out[i * 3] = (rim.inX[i] + rim.outX[i]) / 2;
+    out[i * 3 + 1] = (rim.inY[i] + rim.outY[i]) / 2;
+  }
+  return out;
+}
+
+function rimStep(rim: Rim, probe: MaskedTextureCoords): void {
+  for (let i = 0; i < rim.count; i++) {
+    const mx = (rim.inX[i] + rim.outX[i]) / 2, my = (rim.inY[i] + rim.outY[i]) / 2;
+    if (probe.valid[i]) {
+      rim.inX[i] = mx; rim.inY[i] = my;
+      rim.u[i] = probe.texCoords[i * 2]; rim.v[i] = probe.texCoords[i * 2 + 1];
+    } else {
+      rim.outX[i] = mx; rim.outY[i] = my;
+    }
+  }
 }
 
 function assembleLayerGeometry(
   positions: Float32Array,
   indices: Uint32Array,
   masked: MaskedTextureCoords,
-  wrapU: boolean
+  wrapU: boolean,
+  rim: Rim | null = null,
+  poles: Pole[] = [],
+  wrap: WrapSpec | null = null
 ): LayerGeometry {
   const { texCoords: uv, valid } = masked;
 
-  const maxTris = indices.length / 3;
+  // A clipped triangle with two valid corners becomes a quad, two triangles;
+  // a triangle around a pole becomes three.
+  const maxTris = (indices.length / 3) * 3;
   const outPos = new Float32Array(maxTris * 9);
   const outUV = new Float32Array(maxTris * 6);
   let n = 0;
   let seamDropped = 0;
 
-  for (let t = 0; t < indices.length; t += 3) {
-    const a = indices[t], b = indices[t + 1], c = indices[t + 2];
-    if (!(valid[a] && valid[b] && valid[c])) continue;
-
-    let ua = uv[a * 2], ub = uv[b * 2], uc = uv[c * 2];
+  // The corners of the (possibly clipped) triangle being emitted.
+  const px = [0, 0, 0, 0], py = [0, 0, 0, 0], pz = [0, 0, 0, 0];
+  const pu = [0, 0, 0, 0], pv = [0, 0, 0, 0];
+  let m = 0;
+  const pushVertex = (i: number) => {
+    px[m] = positions[i * 3]; py[m] = positions[i * 3 + 1]; pz[m] = positions[i * 3 + 2];
+    pu[m] = uv[i * 2]; pv[m] = uv[i * 2 + 1];
+    m++;
+  };
+  const pushRim = (s: number) => {
+    px[m] = rim!.inX[s]; py[m] = rim!.inY[s]; pz[m] = 0;
+    pu[m] = rim!.u[s]; pv[m] = rim!.v[s];
+    m++;
+  };
+  const write = (xs: number[], ys: number[], zs: number[], us: number[], vs: number[]) => {
+    for (let k = 0; k < 3; k++) {
+      outPos[n * 9 + k * 3 + 0] = xs[k];
+      outPos[n * 9 + k * 3 + 1] = ys[k];
+      outPos[n * 9 + k * 3 + 2] = zs[k];
+      outUV[n * 6 + k * 2 + 0] = us[k];
+      outUV[n * 6 + k * 2 + 1] = vs[k];
+    }
+    n++;
+  };
+  const emit = (i0: number, i1: number, i2: number) => {
+    const ids = [i0, i1, i2];
+    const xs = ids.map(c => px[c]), ys = ids.map(c => py[c]), zs = ids.map(c => pz[c]);
+    const vs = ids.map(c => pv[c]);
+    const ua = pu[i0];
+    let ub = pu[i1], uc = pu[i2];
     if (wrapU) {
       // Bring b and c to within half a texture of a.
       ub -= Math.round(ub - ua);
       uc -= Math.round(uc - ua);
       const span = Math.max(ua, ub, uc) - Math.min(ua, ub, uc);
       if (span > 0.5) {
-        seamDropped++;
-        continue;
+        if (!fanAroundPole(xs, ys, zs, [pu[i0], pu[i1], pu[i2]], vs)) seamDropped++;
+        return;
       }
     }
-
-    const verts = [a, b, c];
-    const us = [ua, ub, uc];
-    for (let k = 0; k < 3; k++) {
-      const v = verts[k];
-      outPos[n * 9 + k * 3 + 0] = positions[v * 3 + 0];
-      outPos[n * 9 + k * 3 + 1] = positions[v * 3 + 1];
-      outPos[n * 9 + k * 3 + 2] = positions[v * 3 + 2];
-      outUV[n * 6 + k * 2 + 0] = us[k];
-      outUV[n * 6 + k * 2 + 1] = uv[v * 2 + 1];
+    write(xs, ys, zs, [ua, ub, uc], vs);
+  };
+  /**
+   * A triangle with a pole inside it has corners at every longitude, so no
+   * one u works for it. Split it at the pole into three, each spanning only
+   * the longitudes along one of its edges, with the pole's own corner at the
+   * middle of those: u is arbitrary at the pole itself, so that is exact.
+   */
+  const fanAroundPole = (xs: number[], ys: number[], zs: number[], us: number[], vs: number[]): boolean => {
+    for (const pole of poles) {
+      let ox = pole.x, oy = pole.y;
+      if (wrap && (wrap.tx || wrap.ty)) {
+        // The copy of the pole nearest this triangle.
+        const cx = (xs[0] + xs[1] + xs[2]) / 3, cy = (ys[0] + ys[1] + ys[2]) / 3;
+        const t2 = wrap.tx * wrap.tx + wrap.ty * wrap.ty;
+        const k = Math.round(((cx - ox) * wrap.tx + (cy - oy) * wrap.ty) / t2);
+        ox += k * wrap.tx;
+        oy += k * wrap.ty;
+      }
+      if (!inTriangle(ox, oy, xs, ys)) continue;
+      for (let k = 0; k < 3; k++) {
+        const a = k, b = (k + 1) % 3;
+        const ua = us[a];
+        const ub = us[b] - Math.round(us[b] - ua);
+        if (Math.abs(ub - ua) > 0.5) continue;
+        write([xs[a], xs[b], ox], [ys[a], ys[b], oy], [zs[a], zs[b], 0],
+              [ua, ub, (ua + ub) / 2], [vs[a], vs[b], pole.v]);
+      }
+      return true;
     }
-    n++;
+    return false;
+  };
+
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t], b = indices[t + 1], c = indices[t + 2];
+    const nValid = valid[a] + valid[b] + valid[c];
+    if (nValid === 0) continue;
+    if (nValid < 3 && !rim) continue;
+    m = 0;
+    if (nValid === 3) {
+      pushVertex(a); pushVertex(b); pushVertex(c);
+    } else {
+      // Walk the corners in order, keeping the valid ones and putting the
+      // rim point in wherever an edge crosses out of (or into) the valid
+      // region. The winding is kept.
+      const tri = [a, b, c];
+      for (let k = 0; k < 3; k++) {
+        const p = tri[k], q = tri[(k + 1) % 3];
+        if (valid[p]) pushVertex(p);
+        if (valid[p] !== valid[q]) pushRim(rim!.slot.get(edgeKey(p, q, rim!.nVerts))!);
+      }
+    }
+    emit(0, 1, 2);
+    if (m === 4) emit(0, 2, 3);
   }
 
   const idx = new Uint32Array(n * 3);
